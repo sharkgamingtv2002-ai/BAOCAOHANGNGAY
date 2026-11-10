@@ -41,23 +41,49 @@ function reportBadge(status) {
 }
 function teamTag(t) { return `<span class="team-tag t-${TEAM_CLASS[t]}">${esc(t)}</span>`; }
 
-async function api(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    credentials: 'same-origin',
-  });
-  const ct = res.headers.get('content-type') || '';
-  const data = ct.includes('json') ? await res.json() : null;
+/* ---------- Kết nối Supabase (gọi hàm API qua /rest/v1/rpc) ---------- */
+const CFG = window.APP_CONFIG || {};
+const TOKEN_KEY = 'bc_token';
+function getToken() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } }
+function setToken(t) { try { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); } catch { /* bỏ qua */ } }
+
+/** Gọi hàm API. withToken = true → tự gửi token phiên đăng nhập */
+async function rpc(fn, args = {}, withToken = true) {
+  const key = CFG.SUPABASE_KEY || '';
+  const headers = { 'Content-Type': 'application/json', apikey: key };
+  if (key.startsWith('eyJ')) headers.Authorization = `Bearer ${key}`; // khóa anon dạng JWT (cũ)
+  const body = withToken ? { p_token: getToken(), ...args } : args;
+  let res;
+  try {
+    res = await fetch(`${String(CFG.SUPABASE_URL).replace(/\/+$/, '')}/rest/v1/rpc/${fn}`, {
+      method: 'POST', headers, body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.');
+  }
+  const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const err = new Error((data && data.error) || `Lỗi ${res.status}`);
+    const err = new Error((data && data.message) || `Lỗi ${res.status}`);
     err.status = res.status;
-    err.details = data && data.details;
-    if (res.status === 401 && state.user) { state.user = null; go('#/dang-nhap'); }
+    try { err.details = data && data.details ? JSON.parse(data.details) : null; } catch { err.details = null; }
+    if (res.status === 401 && withToken && state.user) { state.user = null; setToken(null); go('#/dang-nhap'); }
     throw err;
   }
   return data;
+}
+
+/** Tải ExcelJS khi cần (file lớn ~1MB, chỉ tải lúc xuất Excel) */
+let excelJsPromise;
+function loadExcelJS() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  excelJsPromise ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'vendor/exceljs.min.js';
+    s.onload = () => resolve(window.ExcelJS);
+    s.onerror = () => { excelJsPromise = null; reject(new Error('Không tải được thư viện Excel.')); };
+    document.head.appendChild(s);
+  });
+  return excelJsPromise;
 }
 
 let toastTimer;
@@ -192,7 +218,7 @@ function editEntryDialog(entry, reportDate, onSaved) {
     const { data, errs } = readEntryForm(form);
     if (errs.length) return showFormError(form, errs[0]);
     try {
-      await api('PUT', `/api/entries/${entry.id}`, data);
+      await rpc('update_entry', { p_id: entry.id, p_entry: data });
       closeDialog();
       toast('Đã lưu thay đổi.');
       onSaved();
@@ -203,7 +229,7 @@ function editEntryDialog(entry, reportDate, onSaved) {
 async function deleteEntry(entry, onDone) {
   const ok = await confirmDialog('Xóa dòng công việc', `Xóa dòng "${entry.machine}"? Thao tác này không hoàn tác được.`, 'Xóa', true);
   if (!ok) return;
-  try { await api('DELETE', `/api/entries/${entry.id}`); toast('Đã xóa.'); onDone(); }
+  try { await rpc('delete_entry', { p_id: entry.id }); toast('Đã xóa.'); onDone(); }
   catch (err) { toast(err.message, true); }
 }
 
@@ -227,7 +253,8 @@ function renderTopbar(active) {
     </div>`;
   bar.hidden = false;
   $('#logout').onclick = async () => {
-    await api('POST', '/api/auth/logout', {}).catch(() => {});
+    await rpc('logout').catch(() => {});
+    setToken(null);
     state.user = null;
     go('#/dang-nhap');
   };
@@ -238,7 +265,7 @@ function authShell(inner) {
   return `
     <div class="auth">
       <div class="auth-hero">
-        <img src="/img/hero.webp" alt="Khu silo nhà máy lúc hoàng hôn">
+        <img src="img/hero.webp" alt="Khu silo nhà máy lúc hoàng hôn">
         <div class="caption">
           <h1>Báo cáo công việc hàng ngày</h1>
           <p>Phòng Kỹ thuật · Nhập, tổng hợp và phê duyệt báo cáo sửa chữa của nhóm Điện, Cơ Khí và PM.</p>
@@ -271,7 +298,9 @@ function renderLogin() {
     const btn = $('button[type=submit]', f);
     btn.disabled = true;
     try {
-      const r = await api('POST', '/api/auth/login', { username, password });
+      const r = await rpc('login', { p_username: username, p_password: password }, false);
+      if (!r.ok) return showFormError(f, r.error);
+      setToken(r.token);
       state.user = r.user;
       state.team = r.user.team || TEAMS[0];
       go(r.user.role === 'staff' ? '#/nhap' : '#/quan-ly');
@@ -311,7 +340,7 @@ function renderRegister() {
     if (d.password !== f.password2.value) return showFormError(f, 'Mật khẩu nhập lại không khớp.');
     if (!d.team) return showFormError(f, 'Vui lòng chọn nhóm.');
     try {
-      const r = await api('POST', '/api/auth/register', d);
+      const r = await rpc('register', { p_username: d.username, p_full_name: d.full_name, p_password: d.password, p_team: d.team }, false);
       f.reset();
       const ok = $('[data-ok]', f);
       ok.textContent = r.message;
@@ -367,7 +396,7 @@ async function renderEntry() {
     const btn = $('button[type=submit]', form);
     btn.disabled = true;
     try {
-      await api('POST', '/api/entries', { ...data, date: state.date, team: state.team });
+      await rpc('add_entry', { p_date: state.date, p_team: state.team, p_entry: data });
       toast('Đã thêm dòng công việc.');
       resetForm();
       $('[name=machine]', form).focus();
@@ -384,7 +413,7 @@ async function loadMine() {
   if (!list) return;
   $('#list-title').textContent = `Dòng của tôi · ${weekday(state.date)}, ${dmy(state.date)}`;
   let r;
-  try { r = await api('GET', `/api/entries/mine?date=${state.date}`); }
+  try { r = await rpc('my_entries', { p_date: state.date }); }
   catch (err) { list.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
 
   // Báo cáo nhóm đang chọn đã duyệt? (quản lý của nhóm vẫn thêm được)
@@ -472,7 +501,7 @@ async function loadCalendar() {
   const [y, m] = state.mgrMonth.split('-').map(Number);
   $('#cal-title').textContent = `Tháng ${m}/${y}`;
   let days = {};
-  try { days = (await api('GET', `/api/reports/month?month=${state.mgrMonth}`)).days; } catch { /* bỏ qua */ }
+  try { days = (await rpc('reports_month', { p_month: state.mgrMonth })).days; } catch { /* bỏ qua */ }
   const first = new Date(y, m - 1, 1);
   const offset = (first.getDay() + 6) % 7; // tuần bắt đầu thứ hai
   const start = new Date(y, m - 1, 1 - offset);
@@ -493,7 +522,7 @@ async function loadReports() {
   const box = $('#reports');
   if (!box) return;
   let r;
-  try { r = await api('GET', `/api/reports?date=${state.mgrDate}`); }
+  try { r = await rpc('reports_of_day', { p_date: state.mgrDate }); }
   catch (err) { box.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
   const isAdmin = state.user.role === 'admin';
   box.innerHTML = `<h2>${weekday(state.mgrDate)}, ${dmy(state.mgrDate)}</h2>` + r.reports.map((rep) => {
@@ -556,17 +585,17 @@ async function loadReports() {
 }
 
 async function reportAction(act, rep, refresh) {
-  const body = { date: rep.date, team: rep.team };
+  const body = { p_date: rep.date, p_team: rep.team };
   try {
     if (act === 'approve') {
       const msg = `Phê duyệt báo cáo nhóm ${rep.team} ngày ${dmy(rep.date)}?\nSau khi duyệt, nhân viên không thể sửa hoặc xóa dòng của mình.` +
         (rep.missing.length ? `\n\nLưu ý: còn ${rep.missing.length} dòng thiếu thông tin.` : '');
       if (!(await confirmDialog('Phê duyệt báo cáo', msg, 'Phê duyệt'))) return;
-      toast((await api('POST', '/api/report/approve', body)).message);
+      toast((await rpc('approve_report', body)).message);
       refresh();
     } else if (act === 'unapprove') {
       if (!(await confirmDialog('Hủy phê duyệt', `Mở lại báo cáo nhóm ${rep.team} ngày ${dmy(rep.date)} cho nhân viên sửa?`, 'Hủy phê duyệt', true))) return;
-      toast((await api('POST', '/api/report/unapprove', body)).message);
+      toast((await rpc('unapprove_report', body)).message);
       refresh();
     } else if (act === 'export') {
       await exportExcel(rep);
@@ -577,23 +606,33 @@ async function reportAction(act, rep, refresh) {
 }
 
 async function exportExcel(rep) {
-  const res = await fetch(`/api/report/export?date=${rep.date}&team=${encodeURIComponent(rep.team)}`, { credentials: 'same-origin' });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    if (data.details && data.details.length) {
+  // Máy chủ kiểm tra quyền + độ đầy đủ rồi mới trả dữ liệu
+  let data;
+  try {
+    data = await rpc('report_export', { p_date: rep.date, p_team: rep.team });
+  } catch (err) {
+    if (Array.isArray(err.details) && err.details.length) {
       openDialog('Chưa thể xuất Excel', `
-        <p>${esc(data.error)}</p>
-        <div class="form-error"><ul>${data.details.map((d) =>
+        <p>${esc(err.message)}</p>
+        <div class="form-error"><ul>${err.details.map((d) =>
           `<li><strong>Dòng ${d.row}</strong> (${esc(d.machine || 'chưa có tên máy')} – ${esc(d.user_name)}): thiếu ${d.fields.map(esc).join(', ')}</li>`).join('')}</ul></div>`,
         '<button class="btn" data-close>Đã hiểu</button>');
       return;
     }
-    throw new Error(data.error || 'Không xuất được file.');
+    throw err;
   }
-  const blob = await res.blob();
-  const cd = res.headers.get('content-disposition') || '';
-  const m = /filename\*=UTF-8''([^;]+)/.exec(cd) || /filename="([^"]+)"/.exec(cd);
-  const name = m ? decodeURIComponent(m[1]) : 'BaoCao.xlsx';
+  toast('Đang tạo file Excel…');
+  const [ExcelJS, template] = await Promise.all([
+    loadExcelJS(),
+    fetch('mau_bao_cao.xlsx', { cache: 'no-cache' }).then((r) => {
+      if (!r.ok) throw new Error('Không tải được file mẫu mau_bao_cao.xlsx.');
+      return r.arrayBuffer();
+    }),
+  ]);
+  const wb = await window.ExcelExport.buildWorkbook(ExcelJS, template, data);
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const name = window.ExcelExport.exportFileName(data.team, data.date);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -612,7 +651,7 @@ function fmtVal(k, v) {
   return v;
 }
 async function showHistory(rep) {
-  const r = await api('GET', `/api/report/history?date=${rep.date}&team=${encodeURIComponent(rep.team)}`);
+  const r = await rpc('report_history', { p_date: rep.date, p_team: rep.team });
   const body = r.items.length ? r.items.map((h) => {
     const keys = Object.keys(h.new_value || h.old_value || {});
     const diff = h.action === 'update'
@@ -640,7 +679,7 @@ async function renderAdmin() {
 
 async function loadUsers() {
   let users;
-  try { users = (await api('GET', '/api/admin/users')).users; }
+  try { users = (await rpc('admin_list_users')).users; }
   catch (err) { $('#users').innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
   const pending = users.filter((u) => u.status === 'pending');
   const tabs = [['pending', 'Chờ duyệt', pending.length], ['active', 'Đang hoạt động'], ['locked', 'Đã khóa'], ['rejected', 'Bị từ chối']];
@@ -653,8 +692,8 @@ async function loadUsers() {
 
   box.innerHTML = list.map((u) => {
     const isAdmin = u.role === 'admin';
-    const scopeAll = u.manager_teams === 'ALL';
-    const scopes = (u.manager_teams || '').split('|');
+    const scopeAll = !!u.manager_all;
+    const scopes = u.manager_teams || [];
     const head = `<div><div class="name">${esc(u.full_name)} ${isAdmin ? '<span class="badge badge-info">Admin</span>' : ''}</div>
       <div class="small muted">@${esc(u.username)} · đăng ký ${esc(u.created_at)}</div></div>`;
     if (u.status === 'pending' || u.status === 'rejected') {
@@ -696,26 +735,28 @@ async function loadUsers() {
 async function userAction(a, u, row) {
   try {
     let r;
-    if (a === 'approve') r = await api('POST', `/api/admin/users/${u.id}/approve`, {});
+    const setStatus = (action) => rpc('admin_set_status', { p_user_id: u.id, p_action: action });
+    if (a === 'approve') r = await setStatus('approve');
     else if (a === 'reject') {
       if (!(await confirmDialog('Từ chối đăng ký', `Từ chối tài khoản @${u.username}?`, 'Từ chối', true))) return;
-      r = await api('POST', `/api/admin/users/${u.id}/reject`, {});
+      r = await setStatus('reject');
     } else if (a === 'lock') {
       if (!(await confirmDialog('Khóa tài khoản', `Khóa tài khoản @${u.username}? Người này sẽ bị đăng xuất ngay.`, 'Khóa', true))) return;
-      r = await api('POST', `/api/admin/users/${u.id}/lock`, {});
-    } else if (a === 'unlock') r = await api('POST', `/api/admin/users/${u.id}/unlock`, {});
+      r = await setStatus('lock');
+    } else if (a === 'unlock') r = await setStatus('unlock');
     else if (a === 'save') {
       const role = $('[data-f=role]', row).value;
       const team = $('[data-f=team]', row).value;
-      let manager_teams;
+      let all = false;
+      let teams = [];
       if (role === 'manager') {
-        if ($('[data-all]', row).checked) manager_teams = 'ALL';
-        else {
-          manager_teams = $$('[data-t]', row).filter((c) => c.checked).map((c) => c.dataset.t);
-          if (!manager_teams.length) return toast('Chọn ít nhất một nhóm cho quản lý.', true);
+        all = $('[data-all]', row).checked;
+        if (!all) {
+          teams = $$('[data-t]', row).filter((c) => c.checked).map((c) => c.dataset.t);
+          if (!teams.length) return toast('Chọn ít nhất một nhóm cho quản lý.', true);
         }
       }
-      r = await api('PUT', `/api/admin/users/${u.id}`, { role, team, manager_teams });
+      r = await rpc('admin_update_user', { p_user_id: u.id, p_role: role, p_team: team, p_manager_all: all, p_manager_teams: teams });
     } else if (a === 'reset') return resetPasswordDialog(u);
     toast(r.message);
     loadUsers();
@@ -734,7 +775,7 @@ function resetPasswordDialog(u) {
     ev.preventDefault();
     const pw = f.pw.value;
     if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) return showFormError(f, 'Mật khẩu phải có ít nhất 8 ký tự, gồm cả chữ và số.');
-    try { const r = await api('POST', `/api/admin/users/${u.id}/reset-password`, { new_password: pw }); closeDialog(); toast(r.message); }
+    try { const r = await rpc('admin_reset_password', { p_user_id: u.id, p_new_password: pw }); closeDialog(); toast(r.message); }
     catch (err) { showFormError(f, err.message); }
   });
 }
@@ -773,7 +814,7 @@ function renderAccount() {
     ev.preventDefault();
     const name = pf.full_name.value.trim();
     if (name.length < 2) return showFormError(pf, 'Vui lòng nhập họ tên.');
-    try { toast((await api('POST', '/api/auth/profile', { full_name: name })).message); state.user.full_name = name; renderTopbar('#/tai-khoan'); }
+    try { toast((await rpc('update_profile', { p_full_name: name })).message); state.user.full_name = name; renderTopbar('#/tai-khoan'); }
     catch (err) { showFormError(pf, err.message); }
   });
   const cp = $('#cp');
@@ -783,18 +824,32 @@ function renderAccount() {
     const pw = cp.pw.value;
     if (pw.length < 8 || !/[A-Za-z]/.test(pw) || !/\d/.test(pw)) return showFormError(cp, 'Mật khẩu mới phải có ít nhất 8 ký tự, gồm cả chữ và số.');
     if (pw !== cp.pw2.value) return showFormError(cp, 'Mật khẩu nhập lại không khớp.');
-    try { toast((await api('POST', '/api/auth/change-password', { old_password: cp.old.value, new_password: pw })).message); cp.reset(); }
+    try { toast((await rpc('change_password', { p_old_password: cp.old.value, p_new_password: pw })).message); cp.reset(); }
     catch (err) { showFormError(cp, err.message); }
   });
+}
+
+/* ---------- Chưa cấu hình Supabase ---------- */
+function renderSetupNeeded() {
+  $('#topbar').hidden = true;
+  view().className = 'view';
+  view().innerHTML = `
+    <section class="card stack">
+      <h1>Chưa cấu hình kết nối</h1>
+      <p>Website chưa được kết nối với cơ sở dữ liệu Supabase.</p>
+      <p>Người quản trị cần mở file <strong>web/config.js</strong> trong repo GitHub và điền
+         <strong>SUPABASE_URL</strong> và <strong>SUPABASE_KEY</strong> theo hướng dẫn trong README.</p>
+    </section>`;
 }
 
 /* ---------- Điều hướng ---------- */
 async function route() {
   closeDialog();
   const h = location.hash || '#/nhap';
+  if (!CFG.SUPABASE_URL || !CFG.SUPABASE_KEY) return renderSetupNeeded();
   if (h === '#/dang-ky') return state.user ? go('#/nhap') : renderRegister();
-  if (!state.user) {
-    try { state.user = (await api('GET', '/api/auth/me')).user; } catch { /* chưa đăng nhập */ }
+  if (!state.user && getToken()) {
+    try { state.user = (await rpc('me')).user; } catch { setToken(null); }
   }
   if (!state.user) return renderLogin();
   if (h === '#/dang-nhap') return go('#/nhap');

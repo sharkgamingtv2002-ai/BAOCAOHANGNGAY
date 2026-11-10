@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "bao-cao", "runtimeExecutable": "node", "runtimeArgs": ["src/server.js"], "port": 3000 }
+    { "name": "bao-cao", "runtimeExecutable": "node", "runtimeArgs": ["dev/server.js"], "port": 3000 }
   ]
 }
