@@ -7,6 +7,6 @@
  * TUYỆT ĐỐI KHÔNG dán khóa "service_role" / "secret" vào đây.
  */
 window.APP_CONFIG = {
-  SUPABASE_URL: '',
-  SUPABASE_KEY: '',
+  SUPABASE_URL: 'https://naybfnrhpphhbnfatfdz.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_2MFX8iZbQMF1VM93gm0gow_C8rHP4R1',
 };
