@@ -1,0 +1,20 @@
+{
+  "name": "bao-cao-cong-viec",
+  "version": "1.0.0",
+  "description": "Website quản lý báo cáo công việc hàng ngày - Phòng Kỹ thuật",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node src/seed.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2"
+  }
+}
