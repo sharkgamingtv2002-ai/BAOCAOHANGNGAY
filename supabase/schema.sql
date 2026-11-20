@@ -732,7 +732,81 @@ begin
       from private.users x where x.status = 'active'), '[]'::jsonb));
 end $$;
 
--- ===== Dung lượng & sao lưu (Admin) =====
+-- ===== Dung lượng, sao lưu & xóa dữ liệu cũ (Admin) =====
+create table if not exists private.purge_tickets (
+  ticket_hash text primary key,                         -- phiếu "đã tải sao lưu", hiệu lực 30 phút
+  user_id     bigint not null references private.users (id) on delete cascade,
+  before_date date not null,
+  created_at  timestamptz not null default now()
+);
+
+create table if not exists private.purge_log (
+  id          bigint generated always as identity primary key,
+  user_id     bigint not null references private.users (id),
+  before_date date not null,
+  reports     int not null,
+  entries     int not null,
+  audit_rows  int not null,
+  created_at  timestamptz not null default now()
+);
+
+create or replace function private.vn_today()
+returns date language sql stable set search_path = '' as $$
+  select (now() at time zone 'Asia/Ho_Chi_Minh')::date
+$$;
+
+/** Chỉ cho xóa dữ liệu cũ hơn 15 ngày */
+create or replace function private.max_purge_before()
+returns date language sql stable set search_path = '' as $$
+  select private.vn_today() - 15
+$$;
+
+create or replace function private.check_purge_date(d date)
+returns void language plpgsql set search_path = '' as $$
+begin
+  if d > private.max_purge_before() then
+    perform private.err(400, 'Chỉ được xóa dữ liệu cũ hơn 15 ngày (chọn ngày không sau '
+                             || to_char(private.max_purge_before(), 'DD/MM/YYYY') || ').');
+  end if;
+end $$;
+
+/** Dữ liệu sao lưu. p_before = null → toàn bộ; có ngày → chỉ các báo cáo trước ngày đó */
+create or replace function private.backup_data(p_before date)
+returns jsonb language sql stable set search_path = '' as $$
+  select jsonb_build_object(
+    'generated_at', private.vn(now()),
+    'before', p_before,
+    'users', coalesce((
+      select jsonb_agg(jsonb_build_object('id', x.id, 'username', x.username, 'full_name', x.full_name,
+               'role', x.role, 'team', x.team, 'status', x.status, 'manager_all', x.manager_all,
+               'manager_teams', to_jsonb(x.manager_teams), 'created_at', private.vn(x.created_at)) order by x.id)
+        from private.users x), '[]'::jsonb),
+    'reports', coalesce((
+      select jsonb_agg(jsonb_build_object('id', r.id, 'date', r.report_date, 'team', r.team, 'status', r.status,
+               'approved_by', ap.full_name, 'approved_at', private.vn(r.approved_at),
+               'entries', (select count(*) from private.entries e where e.report_id = r.id))
+             order by r.report_date, array_position(private.teams(), r.team))
+        from private.reports r left join private.users ap on ap.id = r.approved_by
+       where p_before is null or r.report_date < p_before), '[]'::jsonb),
+    'entries', coalesce((
+      select jsonb_agg(jsonb_build_object('id', e.id, 'date', r.report_date, 'team', r.team, 'report_status', r.status,
+               'user_name', ow.full_name, 'coworker_names', private.user_names(e.coworker_ids),
+               'machine', e.machine, 'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
+               'completion', e.completion, 'note', e.note,
+               'created_at', private.vn(e.created_at), 'updated_at', private.vn(e.updated_at))
+             order by r.report_date, array_position(private.teams(), r.team), coalesce(e.start_at, '9999'), e.id)
+        from private.entries e join private.reports r on r.id = e.report_id join private.users ow on ow.id = e.user_id
+       where p_before is null or r.report_date < p_before), '[]'::jsonb),
+    'audit_log', coalesce((
+      select jsonb_agg(jsonb_build_object('id', a.id, 'created_at', private.vn(a.created_at), 'date', r.report_date,
+               'team', r.team, 'user_name', au.full_name, 'action', a.action, 'after_approval', a.after_approval,
+               'entry_id', a.entry_id, 'old_value', a.old_value, 'new_value', a.new_value) order by a.id)
+        from private.audit_log a
+        left join private.reports r on r.id = a.report_id
+        join private.users au on au.id = a.user_id
+       where p_before is null or r.report_date < p_before), '[]'::jsonb))
+$$;
+
 create or replace function public.admin_storage(p_token text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token);
@@ -746,7 +820,12 @@ begin
     'entries', (select count(*) from private.entries),
     'audit_log', (select count(*) from private.audit_log),
     'first_date', (select min(report_date) from private.reports),
-    'last_date', (select max(report_date) from private.reports));
+    'last_date', (select max(report_date) from private.reports),
+    'max_purge_before', private.max_purge_before(),
+    'last_purge', (select jsonb_build_object('created_at', private.vn(l.created_at), 'user_name', pu.full_name,
+                            'before', l.before_date, 'reports', l.reports, 'entries', l.entries)
+                     from private.purge_log l join private.users pu on pu.id = l.user_id
+                    order by l.id desc limit 1));
 end $$;
 
 /** Toàn bộ dữ liệu để sao lưu ra Excel (KHÔNG gồm mật khẩu / phiên đăng nhập) */
@@ -755,35 +834,66 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token);
 begin
   perform private.require_admin(u);
+  return private.backup_data(null);
+end $$;
+
+/** Xem trước: số dữ liệu sẽ bị xóa nếu xóa các báo cáo trước p_before */
+create or replace function public.admin_purge_preview(p_token text, p_before text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token); d date := private.check_date(p_before);
+begin
+  perform private.require_admin(u);
+  perform private.check_purge_date(d);
   return jsonb_build_object(
-    'generated_at', private.vn(now()),
-    'users', coalesce((
-      select jsonb_agg(jsonb_build_object('id', x.id, 'username', x.username, 'full_name', x.full_name,
-               'role', x.role, 'team', x.team, 'status', x.status, 'manager_all', x.manager_all,
-               'manager_teams', to_jsonb(x.manager_teams), 'created_at', private.vn(x.created_at)) order by x.id)
-        from private.users x), '[]'::jsonb),
-    'reports', coalesce((
-      select jsonb_agg(jsonb_build_object('id', r.id, 'date', r.report_date, 'team', r.team, 'status', r.status,
-               'approved_by', ap.full_name, 'approved_at', private.vn(r.approved_at),
-               'entries', (select count(*) from private.entries e where e.report_id = r.id))
-             order by r.report_date, array_position(private.teams(), r.team))
-        from private.reports r left join private.users ap on ap.id = r.approved_by), '[]'::jsonb),
-    'entries', coalesce((
-      select jsonb_agg(jsonb_build_object('id', e.id, 'date', r.report_date, 'team', r.team, 'report_status', r.status,
-               'user_name', ow.full_name, 'coworker_names', private.user_names(e.coworker_ids),
-               'machine', e.machine, 'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
-               'completion', e.completion, 'note', e.note,
-               'created_at', private.vn(e.created_at), 'updated_at', private.vn(e.updated_at))
-             order by r.report_date, array_position(private.teams(), r.team), coalesce(e.start_at, '9999'), e.id)
-        from private.entries e join private.reports r on r.id = e.report_id join private.users ow on ow.id = e.user_id),
-      '[]'::jsonb),
-    'audit_log', coalesce((
-      select jsonb_agg(jsonb_build_object('id', a.id, 'created_at', private.vn(a.created_at), 'date', r.report_date,
-               'team', r.team, 'user_name', au.full_name, 'action', a.action, 'after_approval', a.after_approval,
-               'entry_id', a.entry_id, 'old_value', a.old_value, 'new_value', a.new_value) order by a.id)
-        from private.audit_log a
-        left join private.reports r on r.id = a.report_id
-        join private.users au on au.id = a.user_id), '[]'::jsonb));
+    'before', d,
+    'reports', (select count(*) from private.reports where report_date < d),
+    'entries', (select count(*) from private.entries e join private.reports r on r.id = e.report_id where r.report_date < d),
+    'audit_log', (select count(*) from private.audit_log a join private.reports r on r.id = a.report_id where r.report_date < d),
+    'first_date', (select min(report_date) from private.reports where report_date < d),
+    'last_date', (select max(report_date) from private.reports where report_date < d));
+end $$;
+
+/** Sao lưu phần sắp xóa + cấp "phiếu" chứng nhận đã sao lưu (bắt buộc khi xóa) */
+create or replace function public.admin_purge_backup(p_token text, p_before text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token); d date := private.check_date(p_before); v_ticket text;
+begin
+  perform private.require_admin(u);
+  perform private.check_purge_date(d);
+  delete from private.purge_tickets where created_at < now() - interval '1 day';
+  v_ticket := encode(extensions.gen_random_bytes(32), 'hex');
+  insert into private.purge_tickets (ticket_hash, user_id, before_date) values (private.hash_token(v_ticket), u.id, d);
+  return private.backup_data(d) || jsonb_build_object('ticket', v_ticket);
+end $$;
+
+/** Xóa vĩnh viễn các báo cáo trước p_before (kèm dòng công việc và lịch sử của chúng) */
+create or replace function public.admin_purge(p_token text, p_before text, p_ticket text, p_confirm text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token); d date := private.check_date(p_before);
+        n_rep int; n_ent int; n_aud int;
+begin
+  perform private.require_admin(u);
+  perform private.check_purge_date(d);
+  if coalesce(p_confirm, '') <> 'XOA' then
+    perform private.err(400, 'Vui lòng gõ đúng chữ XOA để xác nhận.');
+  end if;
+  if p_ticket is null or not exists (
+       select 1 from private.purge_tickets t
+        where t.ticket_hash = private.hash_token(p_ticket) and t.user_id = u.id
+          and t.before_date = d and t.created_at > now() - interval '30 minutes') then
+    perform private.err(400, 'Bạn cần tải bản sao lưu của phần dữ liệu này trước khi xóa (bản sao lưu có hiệu lực 30 phút).');
+  end if;
+
+  delete from private.audit_log a using private.reports r where a.report_id = r.id and r.report_date < d;
+  get diagnostics n_aud = row_count;
+  select count(*) into n_ent from private.entries e join private.reports r on r.id = e.report_id where r.report_date < d;
+  delete from private.reports where report_date < d;            -- dòng công việc tự xóa theo (on delete cascade)
+  get diagnostics n_rep = row_count;
+
+  delete from private.purge_tickets where user_id = u.id;
+  insert into private.purge_log (user_id, before_date, reports, entries, audit_rows) values (u.id, d, n_rep, n_ent, n_aud);
+  return jsonb_build_object('ok', true, 'reports', n_rep, 'entries', n_ent, 'audit_log', n_aud,
+    'message', 'Đã xóa ' || n_rep || ' báo cáo, ' || n_ent || ' dòng công việc trước ngày ' || to_char(d, 'DD/MM/YYYY') || '.');
 end $$;
 
 -- ===== Báo cáo tổng hợp (Quản lý / Admin) =====
@@ -891,7 +1001,8 @@ declare f record;
                             'admin_list_users', 'admin_set_status', 'admin_update_user', 'admin_reset_password',
                             'my_entries', 'add_entry', 'update_entry', 'delete_entry',
                             'reports_of_day', 'reports_month', 'report_history', 'approve_report',
-                            'unapprove_report', 'report_export', 'list_coworkers', 'admin_storage', 'admin_backup'];
+                            'unapprove_report', 'report_export', 'list_coworkers', 'admin_storage', 'admin_backup',
+                            'admin_purge_preview', 'admin_purge_backup', 'admin_purge'];
         roles text := '';
 begin
   if exists (select 1 from pg_roles where rolname = 'anon') then roles := roles || ', anon'; end if;
@@ -914,6 +1025,15 @@ begin
 end $$;
 
 revoke all on all tables in schema private from public;
+
+-- Bật RLS cho mọi bảng nội bộ (thêm 1 lớp bảo vệ; các hàm API chạy với quyền chủ sở hữu nên không bị ảnh hưởng)
+do $$
+declare t record;
+begin
+  for t in select tablename from pg_tables where schemaname = 'private' loop
+    execute format('alter table private.%I enable row level security', t.tablename);
+  end loop;
+end $$;
 revoke all on all sequences in schema private from public;
 
 -- Báo PostgREST (Supabase) tải lại danh sách hàm

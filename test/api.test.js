@@ -371,3 +371,71 @@ test('Admin: xem dung lượng và sao lưu toàn bộ dữ liệu ra Excel', as
   assert.equal(ws.rowCount, bk.body.entries.length + 1);
   assert.match(ExcelExport.backupFileName('2026-11-20 08:05:00'), /^SaoLuu_BaoCao_20-11-2026_08h05\.xlsx$/);
 });
+
+test('Admin: xóa dữ liệu cũ (bắt buộc sao lưu, gõ XOA, không xóa 15 ngày gần nhất)', async () => {
+  const nv = await makeUser('nv.purge', 'Cơ Khí');
+  const ql = await makeUser('ql.purge', 'Cơ Khí', 'manager', { all: true });
+  const OLD = '2025-12-01';
+  const KEEP = '2026-01-05';
+  const old1 = await nv.call('add_entry', { p_date: OLD, p_team: 'Cơ Khí', p_entry: entry(OLD, { machine: 'Máy cũ 1' }) });
+  await nv.call('add_entry', { p_date: OLD, p_team: 'Cơ Khí', p_entry: entry(OLD, { machine: 'Máy cũ 2' }) });
+  await nv.call('update_entry', { p_id: old1.body.id, p_entry: { note: 'sửa' } });
+  await nv.call('add_entry', { p_date: KEEP, p_team: 'Cơ Khí', p_entry: entry(KEEP, { machine: 'Máy giữ lại' }) });
+  const before = '2026-01-01';
+
+  // chỉ Admin
+  for (const fn of ['admin_purge_preview', 'admin_purge_backup', 'admin_purge']) {
+    assert.equal((await ql.call(fn, { p_before: before })).status, 403, fn);
+  }
+
+  // không cho xóa dữ liệu trong 15 ngày gần nhất
+  const { rows } = await mock.db.query('select private.max_purge_before()::text as d, private.vn_today()::text as t');
+  const tooRecent = rows[0].t;
+  const r0 = await admin.call('admin_purge_preview', { p_before: tooRecent });
+  assert.equal(r0.status, 400);
+  assert.match(r0.body.message, /15 ngày/);
+  assert.equal((await admin.call('admin_purge_preview', { p_before: rows[0].d })).status, 200, 'đúng mốc 15 ngày thì được');
+
+  // xem trước
+  const pv = await admin.call('admin_purge_preview', { p_before: before });
+  assert.equal(pv.status, 200);
+  assert.deepEqual([pv.body.reports, pv.body.entries, pv.body.audit_log], [1, 2, 3]);
+  assert.equal(pv.body.first_date, OLD);
+
+  // chưa sao lưu → không xóa được
+  let r = await admin.call('admin_purge', { p_before: before, p_ticket: 'a'.repeat(64), p_confirm: 'XOA' });
+  assert.equal(r.status, 400);
+  assert.match(r.body.message, /sao lưu/);
+
+  // sao lưu phần sắp xóa → có phiếu
+  const bk = await admin.call('admin_purge_backup', { p_before: before });
+  assert.equal(bk.status, 200);
+  assert.equal(bk.body.before, before);
+  assert.match(bk.body.ticket, /^[0-9a-f]{64}$/);
+  assert.deepEqual(bk.body.entries.map((e) => e.machine).sort(), ['Máy cũ 1', 'Máy cũ 2']);
+  assert.ok(!/password|\$2a\$/i.test(JSON.stringify(bk.body)));
+  const wb = ExcelExport.buildBackupWorkbook(ExcelJS, bk.body);
+  assert.equal(wb.getWorksheet('Thông tin').getCell('B3').value, 'Các báo cáo trước ngày 01/01/2026');
+  assert.match(ExcelExport.backupFileName(bk.body.generated_at, before), /^SaoLuu_TruocNgay_01-01-2026_/);
+
+  // sai xác nhận / phiếu cho ngày khác → từ chối
+  assert.equal((await admin.call('admin_purge', { p_before: before, p_ticket: bk.body.ticket, p_confirm: 'xoa nhầm' })).status, 400);
+  assert.equal((await admin.call('admin_purge', { p_before: '2025-12-31', p_ticket: bk.body.ticket, p_confirm: 'XOA' })).status, 400);
+
+  // xóa
+  r = await admin.call('admin_purge', { p_before: before, p_ticket: bk.body.ticket, p_confirm: 'XOA' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.reports, r.body.entries, r.body.audit_log], [1, 2, 3]);
+  assert.equal((await nv.call('my_entries', { p_date: OLD })).body.entries.length, 0, 'dữ liệu cũ đã bị xóa');
+  assert.equal((await nv.call('my_entries', { p_date: KEEP })).body.entries.length, 1, 'dữ liệu sau mốc vẫn còn');
+  const left = await mock.db.query(
+    "select count(*)::int n from private.audit_log a left join private.reports r on r.id = a.report_id where r.id is null");
+  assert.equal(left.rows[0].n, 0, 'không còn lịch sử mồ côi');
+
+  // phiếu đã dùng thì hết hiệu lực; nhật ký lần xóa hiện ở ô dung lượng
+  assert.equal((await admin.call('admin_purge', { p_before: before, p_ticket: bk.body.ticket, p_confirm: 'XOA' })).status, 400);
+  const st = await admin.call('admin_storage');
+  assert.equal(st.body.max_purge_before, rows[0].d);
+  assert.equal(st.body.last_purge.reports, 1);
+  assert.equal(st.body.last_purge.before, before);
+});

@@ -375,3 +375,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .text-warn { color: var(--warn); }
 .text-danger { color: var(--danger); }
 .section-title { margin: 6px 0 12px; }
+
+/* ---------- Xóa dữ liệu cũ (Admin) ---------- */
+.purge { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.purge summary { cursor: pointer; font-weight: 600; color: var(--danger); padding: 4px 0; }
+.purge-body { margin-top: 10px; }
+.purge-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.purge-row .field { min-width: 200px; }
+.purge-steps { margin: 12px 0 0; padding-left: 20px; display: grid; gap: 14px; }
+.purge-steps li > .field { max-width: 260px; margin-bottom: 8px; }
+.btn-danger-solid { background: var(--danger); color: #fff; }
+.purge code, .dlg code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: .85em; white-space: nowrap; }

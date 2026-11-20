@@ -256,6 +256,7 @@
     [
       ['SAO LƯU DỮ LIỆU BÁO CÁO', ''],
       ['Thời điểm sao lưu', data.generated_at],
+      ['Phạm vi', data.before ? 'Các báo cáo trước ngày ' + dmy(data.before) : 'Toàn bộ dữ liệu'],
       ['Số dòng công việc', (data.entries || []).length],
       ['Số báo cáo', (data.reports || []).length],
       ['Số tài khoản', (data.users || []).length],
@@ -266,10 +267,16 @@
     return wb;
   }
 
-  function backupFileName(generatedAt) {
+  /** SaoLuu_BaoCao_<ngày sao lưu>_<giờ>.xlsx, hoặc SaoLuu_TruocNgay_<mốc>_<ngày sao lưu>_<giờ>.xlsx */
+  function backupFileName(generatedAt, before) {
     var d = String(generatedAt || '').slice(0, 10).split('-');
     var t = String(generatedAt || '').slice(11, 16).replace(':', 'h');
-    return d.length === 3 ? 'SaoLuu_BaoCao_' + d[2] + '-' + d[1] + '-' + d[0] + '_' + t + '.xlsx' : 'SaoLuu_BaoCao.xlsx';
+    var stamp = d.length === 3 ? d[2] + '-' + d[1] + '-' + d[0] + '_' + t : 'khong-ro';
+    if (before) {
+      var b = String(before).split('-');
+      return 'SaoLuu_TruocNgay_' + b[2] + '-' + b[1] + '-' + b[0] + '_' + stamp + '.xlsx';
+    }
+    return 'SaoLuu_BaoCao_' + stamp + '.xlsx';
   }
 
   return {

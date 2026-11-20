@@ -816,9 +816,114 @@ async function loadStorage() {
       <div><b>${fmtNum(s.users)}</b><span>tài khoản</span></div>
       <div><b>${fmtNum(s.audit_log)}</b><span>lịch sử sửa</span></div>
     </div>
-    <p class="small ${level === 'ok' ? 'muted' : `text-${level}`}">${s.first_date ? `Dữ liệu từ ${dmy(s.first_date)} đến ${dmy(s.last_date)}. ` : ''}${advice}</p>`;
+    <p class="small ${level === 'ok' ? 'muted' : `text-${level}`}">${s.first_date ? `Dữ liệu từ ${dmy(s.first_date)} đến ${dmy(s.last_date)}. ` : ''}${advice}</p>
+    ${purgeSectionHTML(s, level)}`;
   $('.meter span', box).style.width = `${Math.max(pct, 0.5)}%`;
   $('#backup-btn').onclick = (ev) => downloadBackup(ev.currentTarget);
+  bindPurge(box);
+}
+
+/* ----- Xóa dữ liệu cũ ----- */
+function purgeSectionHTML(s, level) {
+  const max = s.max_purge_before;
+  const jan1 = `${today().slice(0, 4)}-01-01`;
+  const def = jan1 <= max ? jan1 : max;
+  const last = s.last_purge;
+  return `
+    <details class="purge" ${level === 'ok' ? '' : 'open'}>
+      <summary>🗑 Xóa dữ liệu cũ để giải phóng dung lượng</summary>
+      <div class="purge-body stack">
+        <p class="small muted">Xóa <strong>vĩnh viễn</strong> các báo cáo (kèm dòng công việc và lịch sử sửa) <strong>trước</strong> ngày bạn chọn.
+          Không xóa được dữ liệu trong <strong>15 ngày gần nhất</strong>. Tài khoản nhân viên được giữ nguyên.
+          Bắt buộc tải bản sao lưu của phần dữ liệu đó trước khi xóa.</p>
+        ${last ? `<p class="small">Lần xóa gần nhất: ${esc(last.created_at)} — ${esc(last.user_name)} xóa ${fmtNum(last.reports)} báo cáo, ${fmtNum(last.entries)} dòng (trước ${dmy(last.before)}).</p>` : ''}
+        <div class="purge-row">
+          <label class="field"><span>Xóa các báo cáo trước ngày</span>
+            <input type="date" id="purge-date" max="${esc(max)}" value="${esc(def)}"></label>
+          <button class="btn btn-ghost" id="purge-preview" type="button">Xem trước</button>
+        </div>
+        <span class="hint">Chọn được muộn nhất là ngày ${dmy(max)}.</span>
+        <div id="purge-result"></div>
+      </div>
+    </details>`;
+}
+
+function bindPurge(box) {
+  const dateInput = $('#purge-date', box);
+  const result = $('#purge-result', box);
+  const reset = () => { result.innerHTML = ''; };
+  dateInput.addEventListener('change', reset);
+  $('#purge-preview', box).onclick = async () => {
+    const before = dateInput.value;
+    if (!before) return toast('Vui lòng chọn ngày.', true);
+    if (before > dateInput.max) return toast(`Chỉ chọn được ngày không sau ${dmy(dateInput.max)}.`, true);
+    result.innerHTML = '<div class="loading">Đang kiểm tra…</div>';
+    let p;
+    try { p = await rpc('admin_purge_preview', { p_before: before }); }
+    catch (err) { result.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
+    if (!p.reports) {
+      result.innerHTML = `<div class="notice notice-ok">Không có báo cáo nào trước ngày ${dmy(before)}. Không có gì để xóa.</div>`;
+      return;
+    }
+    result.innerHTML = `
+      <div class="notice notice-warn"><div>Sẽ xóa <strong>${fmtNum(p.reports)}</strong> báo cáo, <strong>${fmtNum(p.entries)}</strong> dòng công việc
+        và <strong>${fmtNum(p.audit_log)}</strong> bản ghi lịch sử, từ ngày ${dmy(p.first_date)} đến ${dmy(p.last_date)}.</div></div>
+      <ol class="purge-steps">
+        <li><div class="row"><button class="btn btn-accent" id="purge-backup" type="button">⬇ Bước 1: Tải bản sao lưu phần này</button>
+          <span class="small" id="purge-backup-ok"></span></div></li>
+        <li><label class="field"><span>Bước 2: Gõ chữ <strong>XOA</strong> để xác nhận</span>
+            <input id="purge-confirm" autocomplete="off" placeholder="XOA" disabled></label>
+          <button class="btn btn-danger-solid" id="purge-go" type="button" disabled>Xóa vĩnh viễn</button></li>
+      </ol>`;
+    let ticket = null;
+    const confirmInput = $('#purge-confirm', result);
+    const goBtn = $('#purge-go', result);
+    const refreshGo = () => { goBtn.disabled = !ticket || confirmInput.value.trim().toUpperCase() !== 'XOA'; };
+    confirmInput.oninput = refreshGo;
+    $('#purge-backup', result).onclick = async (ev) => {
+      const btn = ev.currentTarget;
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Đang sao lưu…';
+      try {
+        const [data, ExcelJS] = await Promise.all([rpc('admin_purge_backup', { p_before: before }), loadExcelJS()]);
+        const wb = window.ExcelExport.buildBackupWorkbook(ExcelJS, data);
+        const buf = await wb.xlsx.writeBuffer();
+        downloadBlob(new Blob([buf], { type: XLSX_TYPE }), window.ExcelExport.backupFileName(data.generated_at, before));
+        ticket = data.ticket;
+        $('#purge-backup-ok', result).innerHTML = '<span class="badge badge-ok">✓ Đã tải bản sao lưu</span>';
+        confirmInput.disabled = false;
+        confirmInput.focus();
+        refreshGo();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    };
+    goBtn.onclick = async () => {
+      const ok = await confirmDialog('Xóa vĩnh viễn dữ liệu cũ',
+        `Xóa ${fmtNum(p.reports)} báo cáo và ${fmtNum(p.entries)} dòng công việc trước ngày ${dmy(before)}?\n\nThao tác này KHÔNG hoàn tác được. Hãy chắc chắn bạn đã cất giữ file sao lưu.`,
+        'Xóa vĩnh viễn', true);
+      if (!ok) return;
+      goBtn.disabled = true;
+      try {
+        const r = await rpc('admin_purge', { p_before: before, p_ticket: ticket, p_confirm: confirmInput.value.trim().toUpperCase() });
+        toast(r.message);
+        await loadStorage();
+        openDialog('Đã xóa dữ liệu cũ', `
+          <p>${esc(r.message)}</p>
+          <p class="small muted">Con số dung lượng có thể <strong>chưa giảm ngay</strong>: phần trống sẽ được dùng lại cho dữ liệu mới,
+            nên dung lượng sẽ không tăng thêm trong một thời gian. Muốn con số giảm hẳn, vào Supabase → SQL Editor và chạy lần lượt:
+            <code>vacuum full private.entries;</code> <code>vacuum full private.audit_log;</code> <code>vacuum full private.reports;</code></p>`,
+          '<button class="btn" data-close>Đã hiểu</button>');
+      } catch (err) {
+        toast(err.message, true);
+        refreshGo();
+      }
+    };
+  };
 }
 
 async function downloadBackup(btn) {
