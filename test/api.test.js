@@ -122,11 +122,12 @@ test('giới hạn đăng nhập sai 10 lần / 15 phút', async () => {
   assert.match(r.body.error, /quá nhiều lần/);
 });
 
-test('kiểm tra dữ liệu: tên máy bắt buộc, phần trăm 0–99 hoặc OK, giờ hợp lệ', async () => {
+test('kiểm tra dữ liệu: diễn giải bắt buộc, tên máy không bắt buộc, phần trăm 0–99 hoặc OK, giờ hợp lệ', async () => {
   const c = await makeUser('nv.valid', 'Điện');
   const D = '2026-11-09';
   const add = (o) => c.call('add_entry', { p_date: D, p_team: 'Điện', p_entry: entry(D, o) });
-  assert.equal((await add({ machine: '  ' })).status, 400);
+  assert.equal((await add({ description: '  ' })).status, 400, 'diễn giải công việc bắt buộc');
+  assert.equal((await add({ description: undefined })).status, 400);
   assert.equal((await add({ completion: '150%' })).status, 400);
   assert.equal((await add({ completion: 'abc' })).status, 400);
   assert.equal((await add({ start_at: `${D}T25:00` })).status, 400);
@@ -136,8 +137,9 @@ test('kiểm tra dữ liệu: tên máy bắt buộc, phần trăm 0–99 hoặc
   assert.equal((await add({ completion: '75%' })).status, 200);
   assert.equal((await add({ completion: 0 })).status, 200);
   assert.equal((await add({ start_at: `${D}T22:00`, end_at: '2026-11-10T02:30' })).status, 200, 'cho phép qua ngày hôm sau');
+  assert.equal((await add({ machine: '', note: '' })).status, 200, 'không ghi tên máy, không ghi chú vẫn gửi được');
   const mine = await c.call('my_entries', { p_date: D });
-  assert.deepEqual(mine.body.entries.map((e) => e.completion).sort((x, y) => x - y), [0, 75, 100]);
+  assert.deepEqual(mine.body.entries.map((e) => e.completion).sort((x, y) => x - y), [0, 75, 100, 100]);
 });
 
 test('khóa sửa sau phê duyệt và ghi lịch sử chỉnh sửa', async () => {
@@ -221,7 +223,7 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
   const body = { p_date: D, p_team: 'Điện' };
 
   await nv.call('add_entry', { p_date: D, p_team: 'Điện', p_entry: entry(D, { machine: 'Tủ điện MCC1', description: 'Thay contactor', start_at: `${D}T07:30`, end_at: `${D}T09:00`, note: 'Hoạt động bình thường' }) });
-  const r2 = await nv.call('add_entry', { p_date: D, p_team: 'Điện', p_entry: { machine: 'Motor quạt', description: '', start_at: `${D}T22:00` } });
+  const r2 = await nv.call('add_entry', { p_date: D, p_team: 'Điện', p_entry: { machine: '', description: 'Quấn lại motor', start_at: `${D}T22:00` } });
 
   assert.equal((await nv.call('report_export', body)).status, 403);
   let ex = await ql.call('report_export', body);
@@ -229,7 +231,7 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
   const missing = JSON.parse(ex.body.details);
   assert.equal(missing.length, 1);
   assert.equal(missing[0].row, 2);
-  assert.deepEqual(missing[0].fields, ['Diễn giải công việc', 'Thời gian kết thúc']);
+  assert.deepEqual(missing[0].fields, ['Thời gian kết thúc'], 'thiếu tên máy không chặn xuất Excel');
 
   await nv.call('update_entry', { p_id: r2.body.id, p_entry: { description: 'Quấn lại motor\nKiểm tra cách điện', end_at: '2026-11-11T02:15', completion: '80' } });
   for (let i = 0; i < 21; i++) {
@@ -262,7 +264,8 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
   assert.equal(ws.getCell('B7').border.top.style, 'thin');
   const total = 23;
   const last = 7 + total - 1;
-  assert.equal(ws.getCell(`B${last}`).value, 'Motor quạt');
+  assert.ok(!ws.getCell(`B${last}`).value, 'không ghi tên máy → ô trống');
+  assert.equal(ws.getCell(`C${last}`).value, 'Quấn lại motor\nKiểm tra cách điện');
   assert.equal(ws.getCell(`E${last}`).value, '02:15 (11/11)');
   assert.equal(ws.getCell(`H${last}`).value, 0.8);
   assert.equal(ws.getCell(`H${last}`).numFmt, '0%');

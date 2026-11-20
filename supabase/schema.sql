@@ -327,12 +327,12 @@ declare o jsonb := '{}'::jsonb; v text;
 begin
   if p is null or jsonb_typeof(p) <> 'object' then perform private.err(400, 'Dữ liệu không hợp lệ.'); end if;
   if not p_partial or p ? 'machine' then
-    v := private.check_text(p ->> 'machine', 200);
-    if v = '' then perform private.err(400, 'Tên máy là bắt buộc.'); end if;
-    o := o || jsonb_build_object('machine', v);
+    o := o || jsonb_build_object('machine', private.check_text(p ->> 'machine', 200));   -- không bắt buộc
   end if;
   if not p_partial or p ? 'description' then
-    o := o || jsonb_build_object('description', private.check_text(p ->> 'description', 4000));
+    v := private.check_text(p ->> 'description', 4000);
+    if v = '' then perform private.err(400, 'Vui lòng nhập Diễn giải công việc (tên công việc).'); end if;
+    o := o || jsonb_build_object('description', v);
   end if;
   if not p_partial or p ? 'start_at' then
     o := o || jsonb_build_object('start_at', private.check_dt(p ->> 'start_at', 'Thời gian bắt đầu'));
@@ -383,7 +383,6 @@ returns jsonb language sql stable set search_path = '' as $$
     select e.id, e.machine, u.full_name as user_name,
            row_number() over (order by coalesce(e.start_at, '9999'), e.id) as rn,
            array_remove(array[
-             case when btrim(e.machine) = '' then 'Tên máy' end,
              case when btrim(e.description) = '' then 'Diễn giải công việc' end,
              case when e.start_at is null then 'Thời gian bắt đầu' end,
              case when e.end_at is null then 'Thời gian kết thúc' end,

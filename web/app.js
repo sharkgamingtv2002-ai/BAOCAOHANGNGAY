@@ -222,10 +222,10 @@ function entryFormHTML(e, date) {
   const start = e ? e.start_at || '' : `${date}T${date === today() ? nowHM() : '07:30'}`;
   return `
     <div class="stack">
-      <label class="field"><span>Tên máy <span class="req">*</span></span>
-        <input name="machine" required maxlength="200" autocomplete="off" placeholder="VD: Máy ép viên số 2" value="${esc(e?.machine)}"></label>
-      <label class="field"><span>Diễn giải công việc</span>
-        <textarea name="description" rows="3" maxlength="4000" placeholder="Mô tả công việc đã làm...">${esc(e?.description)}</textarea></label>
+      <label class="field"><span>Diễn giải công việc (tên công việc) <span class="req">*</span></span>
+        <textarea name="description" rows="3" maxlength="4000" required placeholder="VD: Thay vòng bi motor quạt hút, vệ sinh tủ điện...">${esc(e?.description)}</textarea></label>
+      <label class="field"><span>Tên máy</span>
+        <input name="machine" maxlength="200" autocomplete="off" placeholder="VD: Máy ép viên số 2" value="${esc(e?.machine)}"></label>
       <div class="field-row">
         <label class="field"><span>Thời gian bắt đầu</span>
           <input type="datetime-local" name="start_at" value="${esc(start)}"></label>
@@ -247,7 +247,7 @@ function entryFormHTML(e, date) {
           </div>
         </div>
       </div>
-      <label class="field"><span>Tình trạng máy / Ghi chú</span>
+      <label class="field"><span>Tình trạng máy / Ghi chú <span class="muted small">(không bắt buộc)</span></span>
         <textarea name="note" rows="2" maxlength="4000" placeholder="VD: Máy hoạt động bình thường">${esc(e?.note)}</textarea></label>
       <div class="form-error" data-err hidden></div>
     </div>`;
@@ -268,6 +268,12 @@ function bindEntryForm(root) {
   bindCoworkers(root);
 }
 
+/** Rút gọn chữ dài (dùng khi nhắc tên công việc) */
+function shortText(t, n = 60) {
+  t = String(t || '').replace(/\s+/g, ' ').trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+}
+
 /** Đọc & kiểm tra dữ liệu form phía trình duyệt */
 function readEntryForm(root) {
   const val = (n) => $(`[name=${n}]`, root).value;
@@ -279,7 +285,7 @@ function readEntryForm(root) {
     note: val('note').trim(),
   };
   const errs = [];
-  if (!data.machine) errs.push('Vui lòng nhập Tên máy.');
+  if (!data.description) errs.push('Vui lòng nhập Diễn giải công việc (tên công việc).');
   const notDone = !$('[data-pct]', root).hidden;
   if (notDone) {
     const p = val('pct').trim();
@@ -323,7 +329,7 @@ function editEntryDialog(entry, reportDate, onSaved) {
 }
 
 async function deleteEntry(entry, onDone) {
-  const ok = await confirmDialog('Xóa dòng công việc', `Xóa dòng "${entry.machine}"? Thao tác này không hoàn tác được.`, 'Xóa', true);
+  const ok = await confirmDialog('Xóa dòng công việc', `Xóa dòng "${entry.machine || shortText(entry.description)}"? Thao tác này không hoàn tác được.`, 'Xóa', true);
   if (!ok) return;
   try { await rpc('delete_entry', { p_id: entry.id }); toast('Đã xóa.'); onDone(); }
   catch (err) { toast(err.message, true); }
@@ -495,7 +501,7 @@ async function renderEntry() {
       await rpc('add_entry', { p_date: state.date, p_team: state.team, p_entry: data });
       toast('Đã thêm dòng công việc.');
       resetForm();
-      $('[name=machine]', form).focus();
+      $('[name=description]', form).focus();
       loadMine();
     } catch (err) { showFormError(form, err.message); }
     finally { btn.disabled = false; }
@@ -528,7 +534,7 @@ async function loadMine() {
   list.innerHTML = r.entries.map((e) => `
     <article class="entry e-${TEAM_CLASS[e.team]}" data-id="${e.id}">
       <div class="entry-head">
-        <div class="row"><span class="entry-machine">${esc(e.machine)}</span>${teamTag(e.team)}</div>
+        <div class="row"><span class="entry-machine">${e.machine ? esc(e.machine) : '<span class="muted">(không ghi tên máy)</span>'}</span>${teamTag(e.team)}</div>
         <div class="row">${completionBadge(e.completion)}${r.report_status[e.team] === 'approved' ? '<span class="badge badge-muted">🔒 Đã duyệt</span>' : ''}</div>
       </div>
       <div class="entry-time">${e.start_at ? esc(fmtTime(e.start_at, state.date)) : '—'} → ${e.end_at ? esc(fmtTime(e.end_at, state.date)) : '<span class="miss">chưa nhập giờ kết thúc</span>'}</div>
@@ -715,7 +721,7 @@ async function exportExcel(rep) {
       openDialog('Chưa thể xuất Excel', `
         <p>${esc(err.message)}</p>
         <div class="form-error"><ul>${err.details.map((d) =>
-          `<li><strong>Dòng ${d.row}</strong> (${esc(d.machine || 'chưa có tên máy')} – ${esc(d.user_name)}): thiếu ${d.fields.map(esc).join(', ')}</li>`).join('')}</ul></div>`,
+          `<li><strong>Dòng ${d.row}</strong> (${esc(d.machine || 'không ghi tên máy')} – ${esc(d.user_name)}): thiếu ${d.fields.map(esc).join(', ')}</li>`).join('')}</ul></div>`,
         '<button class="btn" data-close>Đã hiểu</button>');
       return;
     }
@@ -760,7 +766,7 @@ async function showHistory(rep) {
     const diff = h.action === 'update'
       ? `<div class="hist-diff">${keys.map((k) => `<div class="k">${FIELD_LABEL[k] || k}</div><div class="old pre">${esc(fmtVal(k, h.old_value[k]))}</div><div class="new pre">${esc(fmtVal(k, h.new_value[k]))}</div>`).join('')}</div>`
       : (h.action === 'create' || h.action === 'delete')
-        ? `<div class="small muted">Tên máy: ${esc((h.new_value || h.old_value).machine)}</div>` : '';
+        ? `<div class="small muted">${(h.new_value || h.old_value).machine ? `Tên máy: ${esc((h.new_value || h.old_value).machine)} · ` : ''}Công việc: ${esc(shortText((h.new_value || h.old_value).description))}</div>` : '';
     return `<div class="hist-item">
       <div class="row-between"><div class="row"><strong>${ACTION_LABEL[h.action] || h.action}</strong>${h.after_approval ? '<span class="badge badge-warn">Sau phê duyệt</span>' : ''}</div>
       <span class="small muted">${esc(h.created_at)}</span></div>

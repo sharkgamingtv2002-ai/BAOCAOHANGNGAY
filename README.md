@@ -104,7 +104,7 @@ Sau khi phê duyệt, nhân viên không thể sửa/xóa/thêm dòng (máy ch�
 | H (Ghi chú) | `OK` hoặc phần trăm (số, định dạng `0%`) |
 | F31 | Họ tên người phê duyệt |
 
-Chỉ xuất được khi mọi dòng có đủ tên máy, diễn giải, giờ bắt đầu, giờ kết thúc, trạng thái — máy chủ kiểm tra và báo rõ dòng nào thiếu trường nào. Báo cáo > 20 dòng tự chèn thêm dòng, khối chữ ký dời xuống. Tên file `BaoCao_<Dien|CoKhi|PM>_<dd-mm-yyyy>.xlsx`.
+Khi nhập: **Diễn giải công việc (tên công việc)** bắt buộc; Tên máy và Ghi chú không bắt buộc. Chỉ xuất được khi mọi dòng có đủ diễn giải, giờ bắt đầu, giờ kết thúc, trạng thái — máy chủ kiểm tra và báo rõ dòng nào thiếu trường nào. Báo cáo > 20 dòng tự chèn thêm dòng, khối chữ ký dời xuống. Tên file `BaoCao_<Dien|CoKhi|PM>_<dd-mm-yyyy>.xlsx`.
 
 ---
 
