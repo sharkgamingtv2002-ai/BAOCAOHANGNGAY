@@ -276,3 +276,98 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
   assert.equal(ws.pageSetup.printArea, `B1:H${31 + shift}`);
   assert.equal(ws.pageSetup.orientation, 'landscape');
 });
+
+test('người làm cùng: chọn thêm người, hiện trong Excel, người làm cùng chỉ xem', async () => {
+  const D = '2026-11-14';
+  const long = await makeUser('dh.long', 'Điện');
+  const an = await makeUser('nv.an', 'Điện');
+  const binh = await makeUser('nv.binh', 'Cơ Khí');
+  const ql = await makeUser('ql.cw', 'Điện', 'manager', { teams: ['Điện'] });
+  const idAn = await userId('nv.an');
+  const idBinh = await userId('nv.binh');
+  const idLong = await userId('dh.long');
+
+  // danh sách để chọn: chỉ tài khoản đang hoạt động
+  const list = await long.call('list_coworkers');
+  assert.equal(list.status, 200);
+  assert.ok(list.body.users.some((u) => u.id === idAn && u.full_name === 'NV nv.an'));
+  assert.ok(!list.body.users.some((u) => u.full_name === 'Nhân viên chờ'), 'không có tài khoản chưa duyệt/bị khóa');
+  assert.equal((await client().call('list_coworkers')).status, 401);
+
+  // kiểm tra dữ liệu
+  const bad = (ids) => long.call('add_entry', { p_date: D, p_team: 'Điện', p_entry: entry(D, { coworker_ids: ids }) });
+  assert.equal((await bad('abc')).status, 400);
+  assert.equal((await bad([999999])).status, 400);
+  assert.equal((await bad(Array.from({ length: 11 }, (_, i) => i + 1))).status, 400);
+
+  // thêm dòng có 2 người làm cùng (trùng + tự chọn mình → tự loại)
+  const add = await long.call('add_entry', {
+    p_date: D, p_team: 'Điện', p_entry: entry(D, { machine: 'Tủ MCC2', coworker_ids: [idBinh, idAn, idAn, idLong] }),
+  });
+  assert.equal(add.status, 200, JSON.stringify(add.body));
+  const id = add.body.id;
+
+  const mine = (await long.call('my_entries', { p_date: D })).body.entries[0];
+  assert.deepEqual(mine.coworker_ids.sort(), [idAn, idBinh].sort());
+  assert.equal(mine.is_owner, true);
+  assert.equal(mine.can_edit, true);
+
+  // người làm cùng thấy dòng nhưng không sửa/xóa được
+  const seen = (await an.call('my_entries', { p_date: D })).body.entries;
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].is_owner, false);
+  assert.equal(seen[0].user_name, 'NV dh.long');
+  assert.equal(seen[0].can_edit, false);
+  assert.equal((await an.call('update_entry', { p_id: id, p_entry: { machine: 'X' } })).status, 403);
+  assert.equal((await binh.call('delete_entry', { p_id: id })).status, 403);
+
+  // sửa danh sách người làm cùng → có lịch sử
+  assert.equal((await long.call('update_entry', { p_id: id, p_entry: { coworker_ids: [idAn] } })).status, 200);
+  assert.equal((await binh.call('my_entries', { p_date: D })).body.entries.length, 0);
+  const h = await ql.call('report_history', { p_date: D, p_team: 'Điện' });
+  const upd = h.body.items.find((x) => x.action === 'update');
+  assert.deepEqual(upd.old_value.coworker_ids.sort(), [idAn, idBinh].sort());
+  assert.deepEqual(upd.new_value.coworker_ids, [idAn]);
+
+  // quản lý thấy tên người làm cùng; Excel ghi "Người nhập, Người làm cùng"
+  const rep = (await ql.call('reports_of_day', { p_date: D })).body.reports[0];
+  assert.deepEqual(rep.entries[0].coworker_names, ['NV nv.an']);
+  const ex = await ql.call('report_export', { p_date: D, p_team: 'Điện' });
+  assert.equal(ex.status, 200);
+  const template = fs.readFileSync(path.join(__dirname, '..', 'web', 'mau_bao_cao.xlsx'));
+  const wb = await ExcelExport.buildWorkbook(ExcelJS, template, ex.body);
+  assert.equal(wb.worksheets[0].getCell('G7').value, 'NV dh.long, NV nv.an');
+});
+
+test('Admin: xem dung lượng và sao lưu toàn bộ dữ liệu ra Excel', async () => {
+  const nv = await makeUser('nv.backup', 'PM');
+  const ql = await makeUser('ql.backup', 'PM', 'manager', { all: true });
+
+  // chỉ Admin
+  assert.equal((await nv.call('admin_storage')).status, 403);
+  assert.equal((await ql.call('admin_storage')).status, 403);
+  assert.equal((await ql.call('admin_backup')).status, 403);
+  assert.equal((await client().call('admin_backup')).status, 401);
+
+  const st = await admin.call('admin_storage');
+  assert.equal(st.status, 200);
+  assert.ok(st.body.db_bytes > 0);
+  assert.equal(st.body.limit_bytes, 500 * 1024 * 1024);
+  assert.ok(st.body.entries > 0 && st.body.users > 0);
+
+  const bk = await admin.call('admin_backup');
+  assert.equal(bk.status, 200);
+  const raw = JSON.stringify(bk.body);
+  assert.ok(!/password|\$2a\$|token/i.test(raw), 'sao lưu không được chứa mật khẩu/phiên');
+  assert.equal(bk.body.entries.length, st.body.entries);
+  assert.ok(bk.body.entries.some((e) => e.coworker_names.includes('NV nv.an')));
+
+  const wb = ExcelExport.buildBackupWorkbook(ExcelJS, bk.body);
+  const out = new ExcelJS.Workbook();
+  await out.xlsx.load(await wb.xlsx.writeBuffer());
+  assert.deepEqual(out.worksheets.map((w) => w.name), ['Dòng công việc', 'Báo cáo', 'Tài khoản', 'Lịch sử chỉnh sửa', 'Thông tin']);
+  const ws = out.getWorksheet('Dòng công việc');
+  assert.equal(ws.getCell('A1').value, 'Ngày');
+  assert.equal(ws.rowCount, bk.body.entries.length + 1);
+  assert.match(ExcelExport.backupFileName('2026-11-20 08:05:00'), /^SaoLuu_BaoCao_20-11-2026_08h05\.xlsx$/);
+});

@@ -4,7 +4,8 @@ const TEAMS = ['Điện', 'Cơ Khí', 'PM'];
 const TEAM_CLASS = { 'Điện': 'dien', 'Cơ Khí': 'cokhi', PM: 'pm' };
 const ROLE_LABEL = { admin: 'Admin', manager: 'Quản lý', staff: 'Nhân viên' };
 const STATUS_LABEL = { pending: 'Chờ duyệt', active: 'Hoạt động', rejected: 'Bị từ chối', locked: 'Đã khóa' };
-const FIELD_LABEL = { machine: 'Tên máy', description: 'Diễn giải', start_at: 'Bắt đầu', end_at: 'Kết thúc', completion: 'Trạng thái', note: 'Tình trạng máy / Ghi chú' };
+const FIELD_LABEL = { machine: 'Tên máy', description: 'Diễn giải', start_at: 'Bắt đầu', end_at: 'Kết thúc', completion: 'Trạng thái', note: 'Tình trạng máy / Ghi chú', coworker_ids: 'Người làm cùng' };
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const state = { user: null, date: today(), team: null, mgrDate: today(), mgrMonth: today().slice(0, 7), adminTab: 'pending' };
 
@@ -125,6 +126,95 @@ function confirmDialog(title, message, okLabel = 'Đồng ý', danger = false) {
   });
 }
 
+/* ---------- Người làm cùng ---------- */
+let coworkerCache = null;
+const knownNames = new Map(); // id → họ tên (kể cả tài khoản đã khóa, lấy từ dữ liệu dòng)
+async function loadCoworkers(force = false) {
+  if (!coworkerCache || force) {
+    coworkerCache = (await rpc('list_coworkers')).users;
+    coworkerCache.forEach((u) => knownNames.set(u.id, u.full_name));
+  }
+  return coworkerCache;
+}
+function rememberNames(ids, names) { (ids || []).forEach((id, i) => names && names[i] && knownNames.set(id, names[i])); }
+function coworkerName(id) { return knownNames.get(id) || `#${id}`; }
+/** Bỏ dấu tiếng Việt để tìm kiếm */
+function fold(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase(); }
+const sameIds = (a, b) => JSON.stringify([...(a || [])].sort((x, y) => x - y)) === JSON.stringify([...(b || [])].sort((x, y) => x - y));
+
+function coworkerFieldHTML(e) {
+  const owner = e ? e.user_id : state.user.id;
+  return `
+    <div class="field"><span>Người làm cùng</span>
+      <div class="cw" data-cw data-owner="${esc(owner ?? '')}" data-selected="${esc(JSON.stringify(e?.coworker_ids || []))}">
+        <div class="cw-chips" data-cw-chips></div>
+        <button type="button" class="btn btn-ghost btn-sm" data-cw-toggle aria-expanded="false">+ Thêm người làm cùng</button>
+        <div class="cw-panel" data-cw-panel hidden>
+          <input type="search" data-cw-search placeholder="Tìm theo tên…" aria-label="Tìm người làm cùng" autocomplete="off">
+          <div class="cw-list" data-cw-list><div class="muted small">Đang tải…</div></div>
+        </div>
+      </div>
+      <span class="hint">Người được chọn sẽ thấy dòng này và có tên ở cột "Người thực hiện".</span>
+    </div>`;
+}
+
+function bindCoworkers(root) {
+  const box = $('[data-cw]', root);
+  if (!box) return;
+  const owner = Number(box.dataset.owner) || state.user.id;
+  let selected = JSON.parse(box.dataset.selected || '[]');
+  const chips = $('[data-cw-chips]', box);
+  const panel = $('[data-cw-panel]', box);
+  const list = $('[data-cw-list]', box);
+  const search = $('[data-cw-search]', box);
+  const toggle = $('[data-cw-toggle]', box);
+
+  const sync = () => {
+    box.dataset.selected = JSON.stringify(selected);
+    chips.innerHTML = selected.map((id) =>
+      `<span class="cw-chip">${esc(coworkerName(id))}<button type="button" data-rm="${id}" aria-label="Bỏ ${esc(coworkerName(id))}">×</button></span>`).join('');
+    toggle.textContent = panel.hidden ? (selected.length ? '+ Thêm / bớt người' : '+ Thêm người làm cùng') : 'Xong';
+    $$('[data-rm]', chips).forEach((b) => (b.onclick = () => {
+      selected = selected.filter((x) => x !== Number(b.dataset.rm));
+      sync();
+      renderList();
+    }));
+  };
+  const renderList = () => {
+    if (!coworkerCache) return;
+    const q = fold(search.value.trim());
+    const users = coworkerCache.filter((u) => u.id !== owner && (!q || fold(u.full_name).includes(q)));
+    if (!users.length) { list.innerHTML = '<div class="muted small">Không tìm thấy ai.</div>'; return; }
+    let html = '';
+    let lastTeam;
+    for (const u of users) {
+      if (u.team !== lastTeam) { html += `<div class="cw-group">${esc(u.team || 'Khác')}</div>`; lastTeam = u.team; }
+      html += `<label class="cw-item"><input type="checkbox" value="${u.id}" ${selected.includes(u.id) ? 'checked' : ''}> ${esc(u.full_name)}</label>`;
+    }
+    list.innerHTML = html;
+    $$('input[type=checkbox]', list).forEach((cb) => (cb.onchange = () => {
+      const id = Number(cb.value);
+      if (cb.checked) {
+        if (selected.length >= 10) { cb.checked = false; toast('Chỉ chọn tối đa 10 người làm cùng.', true); return; }
+        selected.push(id);
+      } else selected = selected.filter((x) => x !== id);
+      sync();
+    }));
+  };
+  toggle.onclick = async () => {
+    panel.hidden = !panel.hidden;
+    toggle.setAttribute('aria-expanded', String(!panel.hidden));
+    sync();
+    if (panel.hidden) return;
+    try { await loadCoworkers(); renderList(); search.focus(); }
+    catch (err) { list.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; }
+  };
+  search.oninput = renderList;
+  search.onkeydown = (ev) => { if (ev.key === 'Enter') ev.preventDefault(); };
+  sync();
+  if (selected.some((id) => !knownNames.has(id))) loadCoworkers().then(sync).catch(() => {});
+}
+
 /* ---------- Form dòng công việc (dùng chung) ---------- */
 function entryFormHTML(e, date) {
   const c = e ? e.completion : 100;
@@ -143,6 +233,7 @@ function entryFormHTML(e, date) {
           <input type="datetime-local" name="end_at" value="${esc(e?.end_at || '')}"></label>
       </div>
       <p class="hint">Có thể chọn giờ kết thúc sang ngày hôm sau nếu làm qua đêm.</p>
+      ${coworkerFieldHTML(e)}
       <div class="field"><span>Trạng thái hoàn thành</span>
         <div>
           <div class="seg" role="group" aria-label="Trạng thái hoàn thành">
@@ -174,6 +265,7 @@ function bindEntryForm(root) {
     })
   );
   $$('[data-chip]', root).forEach((b) => b.addEventListener('click', () => { $('[name=pct]', root).value = b.dataset.chip; }));
+  bindCoworkers(root);
 }
 
 /** Đọc & kiểm tra dữ liệu form phía trình duyệt */
@@ -198,6 +290,8 @@ function readEntryForm(root) {
   data.start_at = data.start_at.slice(0, 16);
   data.end_at = data.end_at.slice(0, 16);
   if (data.start_at && data.end_at && data.end_at < data.start_at) errs.push('Thời gian kết thúc phải sau thời gian bắt đầu.');
+  const cw = $('[data-cw]', root);
+  if (cw) data.coworker_ids = JSON.parse(cw.dataset.selected || '[]');
   return { data, errs };
 }
 
@@ -217,6 +311,8 @@ function editEntryDialog(entry, reportDate, onSaved) {
     ev.preventDefault();
     const { data, errs } = readEntryForm(form);
     if (errs.length) return showFormError(form, errs[0]);
+    // không gửi lại danh sách người làm cùng nếu không đổi (tránh lỗi khi có người vừa bị khóa)
+    if (sameIds(data.coworker_ids, entry.coworker_ids)) delete data.coworker_ids;
     try {
       await rpc('update_entry', { p_id: entry.id, p_entry: data });
       closeDialog();
@@ -438,8 +534,11 @@ async function loadMine() {
       <div class="entry-time">${e.start_at ? esc(fmtTime(e.start_at, state.date)) : '—'} → ${e.end_at ? esc(fmtTime(e.end_at, state.date)) : '<span class="miss">chưa nhập giờ kết thúc</span>'}</div>
       ${e.description ? `<div class="entry-body pre">${esc(e.description)}</div>` : '<div class="entry-body muted small">Chưa có diễn giải</div>'}
       ${e.note ? `<div class="entry-note pre">📝 ${esc(e.note)}</div>` : ''}
+      ${e.is_owner === false ? `<div class="entry-cw">✍️ Do <strong>${esc(e.user_name)}</strong> nhập · bạn là người làm cùng</div>` : ''}
+      ${e.coworker_names && e.coworker_names.length ? `<div class="entry-cw">👥 Làm cùng: ${esc(e.coworker_names.join(', '))}</div>` : ''}
       ${e.can_edit ? `<div class="entry-actions"><button class="btn btn-ghost btn-sm" data-edit>Sửa</button><button class="btn btn-danger btn-sm" data-del>Xóa</button></div>` : ''}
     </article>`).join('');
+  r.entries.forEach((e) => rememberNames(e.coworker_ids, e.coworker_names));
   const byId = Object.fromEntries(r.entries.map((e) => [e.id, e]));
   $$('.entry', list).forEach((el) => {
     const e = byId[el.dataset.id];
@@ -557,7 +656,7 @@ async function loadReports() {
             <td data-label="Kết thúc" class="num">${m('Thời gian kết thúc', esc(fmtTime(e.end_at, rep.date)))}</td>
             <td data-label="Trạng thái">${completionBadge(e.completion)}</td>
             <td data-label="Ghi chú" class="w-note pre">${esc(e.note)}</td>
-            <td data-label="Người thực hiện" class="nowrap">${esc(e.user_name)}</td>
+            <td data-label="Người thực hiện" class="w-person">${esc(e.user_name)}${e.coworker_names && e.coworker_names.length ? `<div class="small muted">+ ${esc(e.coworker_names.join(', '))}</div>` : ''}</td>
             <td class="no-label nowrap">${e.can_edit ? '<button class="btn btn-ghost btn-sm" data-edit>Sửa</button> <button class="btn btn-danger btn-sm" data-del>Xóa</button>' : ''}</td>
           </tr>`;
         }).join('')}</tbody>
@@ -565,6 +664,7 @@ async function loadReports() {
     </section>`;
   }).join('');
 
+  r.reports.forEach((rep) => rep.entries.forEach((e) => rememberNames(e.coworker_ids, e.coworker_names)));
   const byTeam = Object.fromEntries(r.reports.map((rep) => [rep.team, rep]));
   $$('.report-card', box).forEach((card) => {
     const rep = byTeam[card.dataset.team];
@@ -631,8 +731,10 @@ async function exportExcel(rep) {
   ]);
   const wb = await window.ExcelExport.buildWorkbook(ExcelJS, template, data);
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const name = window.ExcelExport.exportFileName(data.team, data.date);
+  downloadBlob(new Blob([buf], { type: XLSX_TYPE }), window.ExcelExport.exportFileName(data.team, data.date));
+}
+
+function downloadBlob(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -648,10 +750,11 @@ function fmtVal(k, v) {
   if (v === null || v === undefined || v === '') return '(trống)';
   if (k === 'completion') return v >= 100 ? 'OK' : `${v}%`;
   if (k === 'start_at' || k === 'end_at') return v.replace('T', ' ');
+  if (k === 'coworker_ids') return Array.isArray(v) && v.length ? v.map(coworkerName).join(', ') : '(không có)';
   return v;
 }
 async function showHistory(rep) {
-  const r = await rpc('report_history', { p_date: rep.date, p_team: rep.team });
+  const [r] = await Promise.all([rpc('report_history', { p_date: rep.date, p_team: rep.team }), loadCoworkers().catch(() => null)]);
   const body = r.items.length ? r.items.map((h) => {
     const keys = Object.keys(h.new_value || h.old_value || {});
     const diff = h.action === 'update'
@@ -671,10 +774,68 @@ async function renderAdmin() {
   renderTopbar('#/quan-tri');
   view().className = 'view';
   view().innerHTML = `
-    <div class="page-head"><div><h1>Quản trị tài khoản</h1><p class="muted">Duyệt đăng ký, phân quyền, khóa tài khoản và đặt lại mật khẩu.</p></div></div>
+    <div class="page-head"><div><h1>Quản trị tài khoản</h1><p class="muted">Duyệt đăng ký, phân quyền, khóa tài khoản, đặt lại mật khẩu và sao lưu dữ liệu.</p></div></div>
+    <section class="card storage" id="storage"><div class="loading">Đang tải dung lượng…</div></section>
+    <h2 class="section-title">Tài khoản</h2>
     <div class="tabs" id="tabs"></div>
     <section class="card" id="users"><div class="loading">Đang tải…</div></section>`;
+  loadStorage();
   loadUsers();
+}
+
+/* ----- Dung lượng & sao lưu ----- */
+function fmtBytes(b) {
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+const fmtNum = (n) => Number(n || 0).toLocaleString('vi-VN');
+
+async function loadStorage() {
+  const box = $('#storage');
+  if (!box) return;
+  let s;
+  try { s = await rpc('admin_storage'); }
+  catch (err) { box.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
+  const pct = Math.min(100, (s.db_bytes / s.limit_bytes) * 100);
+  const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+  const advice = {
+    ok: 'Nên sao lưu định kỳ (mỗi tuần hoặc mỗi tháng) vì gói Free không có bản sao lưu tự động.',
+    warn: '⚠ Dung lượng đã trên 70%. Hãy sao lưu và cân nhắc xóa dữ liệu cũ hoặc nâng gói Supabase.',
+    danger: '⛔ Sắp hết dung lượng! Hãy sao lưu ngay, sau đó xóa dữ liệu cũ hoặc nâng gói Supabase.',
+  }[level];
+  box.innerHTML = `
+    <div class="row-between">
+      <div><h2>Dung lượng dữ liệu</h2><p class="muted small">Gói Free của Supabase cho phép tối đa 500 MB.</p></div>
+      <button class="btn btn-accent" id="backup-btn">⬇ Sao lưu ra Excel</button>
+    </div>
+    <div class="storage-figs"><strong>${fmtBytes(s.db_bytes)} / 500 MB</strong><span class="muted">đã dùng ${pct.toFixed(1)}%</span></div>
+    <div class="meter meter-${level}" role="meter" aria-label="Dung lượng đã dùng" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(1)}"><span></span></div>
+    <div class="storage-stats">
+      <div><b>${fmtNum(s.entries)}</b><span>dòng công việc</span></div>
+      <div><b>${fmtNum(s.reports)}</b><span>báo cáo</span></div>
+      <div><b>${fmtNum(s.users)}</b><span>tài khoản</span></div>
+      <div><b>${fmtNum(s.audit_log)}</b><span>lịch sử sửa</span></div>
+    </div>
+    <p class="small ${level === 'ok' ? 'muted' : `text-${level}`}">${s.first_date ? `Dữ liệu từ ${dmy(s.first_date)} đến ${dmy(s.last_date)}. ` : ''}${advice}</p>`;
+  $('.meter span', box).style.width = `${Math.max(pct, 0.5)}%`;
+  $('#backup-btn').onclick = (ev) => downloadBackup(ev.currentTarget);
+}
+
+async function downloadBackup(btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Đang sao lưu…';
+  try {
+    const [data, ExcelJS] = await Promise.all([rpc('admin_backup'), loadExcelJS()]);
+    const wb = window.ExcelExport.buildBackupWorkbook(ExcelJS, data);
+    const buf = await wb.xlsx.writeBuffer();
+    downloadBlob(new Blob([buf], { type: XLSX_TYPE }), window.ExcelExport.backupFileName(data.generated_at));
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 async function loadUsers() {

@@ -67,6 +67,14 @@ select private.create_admin('k.huy', 'Trần Khánh Huy', 'MatKhauMoiCuaBan123')
 
 ---
 
+## Cập nhật phiên bản mới
+
+Khi code có thay đổi trong `supabase/schema.sql`, làm **theo đúng thứ tự**:
+1. Supabase → **SQL Editor** → dán toàn bộ `supabase/schema.sql` mới → **Run** (nếu được hỏi, chọn *Run and enable RLS*). Dữ liệu cũ được giữ nguyên.
+2. Sau đó mới đẩy code lên GitHub (`git push`) để website dùng các tính năng mới.
+
+Thay đổi chỉ trong `web/` thì chỉ cần bước 2.
+
 ## Lưu ý vận hành
 
 - **Supabase Free tạm dừng project nếu 7 ngày liên tục không có ai dùng.** Dữ liệu vẫn còn; vào trang Supabase bấm *Restore project* là chạy lại.

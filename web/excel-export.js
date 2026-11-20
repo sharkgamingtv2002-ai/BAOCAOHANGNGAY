@@ -36,6 +36,11 @@
     return parts[1] + ' (' + d[2] + '/' + d[1] + ')';
   }
 
+  /** "Người thực hiện": người nhập + người làm cùng */
+  function personText(e) {
+    return [e.user_name].concat(e.coworker_names || []).filter(Boolean).join(', ');
+  }
+
   function clone(o) {
     return o ? JSON.parse(JSON.stringify(o)) : o;
   }
@@ -130,7 +135,7 @@
       values[cols.start] = e ? fmtTime(e.start_at, report.date) : null;
       values[cols.end] = e ? fmtTime(e.end_at, report.date) : null;
       values[cols.note] = e ? e.note || '' : null;
-      values[cols.person] = e ? e.user_name : null;
+      values[cols.person] = e ? personText(e) : null;
       // OK = chữ; phần trăm = số kiểu 0% (tránh cảnh báo "số lưu dạng chữ" của Excel)
       values[cols.completion] = e ? (e.completion >= 100 ? 'OK' : e.completion / 100) : null;
       for (c = L.firstCol; c <= L.lastCol; c++) {
@@ -161,5 +166,114 @@
     return wb;
   }
 
-  return { buildWorkbook: buildWorkbook, exportFileName: exportFileName, fmtTime: fmtTime, LAYOUT: LAYOUT };
+  // ------------------------------------------------------------------
+  //  SAO LƯU TOÀN BỘ DỮ LIỆU RA EXCEL (trang Admin)
+  // ------------------------------------------------------------------
+  var ROLE = { admin: 'Admin', manager: 'Quản lý', staff: 'Nhân viên' };
+  var STATUS = { pending: 'Chờ duyệt', active: 'Hoạt động', rejected: 'Bị từ chối', locked: 'Đã khóa' };
+  var REPORT_STATUS = { draft: 'Đang nhập', approved: 'Đã phê duyệt' };
+  var ACTION = { create: 'Thêm dòng', update: 'Sửa dòng', delete: 'Xóa dòng', approve: 'Phê duyệt', unapprove: 'Hủy phê duyệt' };
+
+  function dmy(d) {
+    if (!d) return '';
+    var p = String(d).split('-');
+    return p.length === 3 ? p[2] + '/' + p[1] + '/' + p[0] : d;
+  }
+  function dt(v) {
+    return v ? String(v).replace('T', ' ') : '';
+  }
+
+  function addSheet(wb, name, columns, rows) {
+    var ws = wb.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = columns.map(function (c) { return { header: c[1], key: c[0], width: c[2] }; });
+    rows.forEach(function (r) { ws.addRow(r); });
+    var head = ws.getRow(1);
+    head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF14532D' } };
+    head.alignment = { vertical: 'middle', wrapText: true };
+    head.height = 22;
+    ws.eachRow(function (row, n) {
+      if (n > 1) row.alignment = { vertical: 'top', wrapText: true };
+    });
+    if (rows.length) ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+    return ws;
+  }
+
+  function buildBackupWorkbook(ExcelJS, data) {
+    var wb = new ExcelJS.Workbook();
+    wb.creator = 'He thong bao cao cong viec';
+
+    addSheet(wb, 'Dòng công việc', [
+      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['report_status', 'Trạng thái báo cáo', 15],
+      ['machine', 'Tên máy', 24], ['description', 'Diễn giải công việc', 50],
+      ['start', 'Bắt đầu', 17], ['end', 'Kết thúc', 17], ['completion', 'Hoàn thành', 11],
+      ['note', 'Tình trạng máy / Ghi chú', 36], ['user', 'Người nhập', 22], ['coworkers', 'Người làm cùng', 30],
+      ['created', 'Nhập lúc', 19], ['updated', 'Sửa lần cuối', 19], ['id', 'Mã dòng', 9],
+    ], (data.entries || []).map(function (e) {
+      return {
+        date: dmy(e.date), team: e.team, report_status: REPORT_STATUS[e.report_status] || e.report_status,
+        machine: e.machine, description: e.description, start: dt(e.start_at), end: dt(e.end_at),
+        completion: e.completion >= 100 ? 'OK' : e.completion + '%', note: e.note, user: e.user_name,
+        coworkers: (e.coworker_names || []).join(', '), created: e.created_at, updated: e.updated_at, id: e.id,
+      };
+    }));
+
+    addSheet(wb, 'Báo cáo', [
+      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['status', 'Trạng thái', 15], ['entries', 'Số dòng', 9],
+      ['approved_by', 'Người duyệt', 22], ['approved_at', 'Duyệt lúc', 19],
+    ], (data.reports || []).map(function (r) {
+      return {
+        date: dmy(r.date), team: r.team, status: REPORT_STATUS[r.status] || r.status, entries: r.entries,
+        approved_by: r.approved_by || '', approved_at: r.approved_at || '',
+      };
+    }));
+
+    addSheet(wb, 'Tài khoản', [
+      ['username', 'Tên đăng nhập', 18], ['full_name', 'Họ tên', 24], ['role', 'Vai trò', 11], ['team', 'Nhóm', 9],
+      ['scope', 'Phạm vi quản lý', 20], ['status', 'Trạng thái', 12], ['created', 'Đăng ký lúc', 19],
+    ], (data.users || []).map(function (u) {
+      return {
+        username: u.username, full_name: u.full_name, role: ROLE[u.role] || u.role, team: u.team || '',
+        scope: u.role === 'staff' ? '' : u.manager_all ? 'Tất cả' : (u.manager_teams || []).join(', '),
+        status: STATUS[u.status] || u.status, created: u.created_at,
+      };
+    }));
+
+    addSheet(wb, 'Lịch sử chỉnh sửa', [
+      ['created', 'Thời gian', 19], ['date', 'Ngày báo cáo', 12], ['team', 'Nhóm', 9], ['user', 'Người thực hiện', 22],
+      ['action', 'Thao tác', 15], ['after', 'Sau phê duyệt', 12], ['entry', 'Mã dòng', 9],
+      ['old', 'Giá trị cũ', 45], ['new', 'Giá trị mới', 45],
+    ], (data.audit_log || []).map(function (a) {
+      return {
+        created: a.created_at, date: dmy(a.date), team: a.team || '', user: a.user_name,
+        action: ACTION[a.action] || a.action, after: a.after_approval ? 'Có' : '', entry: a.entry_id || '',
+        old: a.old_value ? JSON.stringify(a.old_value) : '', new: a.new_value ? JSON.stringify(a.new_value) : '',
+      };
+    }));
+
+    var info = wb.addWorksheet('Thông tin');
+    info.columns = [{ width: 26 }, { width: 40 }];
+    [
+      ['SAO LƯU DỮ LIỆU BÁO CÁO', ''],
+      ['Thời điểm sao lưu', data.generated_at],
+      ['Số dòng công việc', (data.entries || []).length],
+      ['Số báo cáo', (data.reports || []).length],
+      ['Số tài khoản', (data.users || []).length],
+      ['Số bản ghi lịch sử', (data.audit_log || []).length],
+      ['Ghi chú', 'Không chứa mật khẩu. Dùng để lưu trữ/đối chiếu.'],
+    ].forEach(function (r) { info.addRow(r); });
+    info.getRow(1).font = { bold: true, size: 14 };
+    return wb;
+  }
+
+  function backupFileName(generatedAt) {
+    var d = String(generatedAt || '').slice(0, 10).split('-');
+    var t = String(generatedAt || '').slice(11, 16).replace(':', 'h');
+    return d.length === 3 ? 'SaoLuu_BaoCao_' + d[2] + '-' + d[1] + '-' + d[0] + '_' + t + '.xlsx' : 'SaoLuu_BaoCao.xlsx';
+  }
+
+  return {
+    buildWorkbook: buildWorkbook, exportFileName: exportFileName, fmtTime: fmtTime, LAYOUT: LAYOUT,
+    buildBackupWorkbook: buildBackupWorkbook, backupFileName: backupFileName, personText: personText,
+  };
 });

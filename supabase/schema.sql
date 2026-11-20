@@ -78,6 +78,9 @@ create table if not exists private.entries (
   updated_at  timestamptz not null default now()
 );
 create index if not exists entries_report_idx on private.entries (report_id);
+-- Người làm cùng (bản cập nhật 2): danh sách id tài khoản, không gồm người nhập
+alter table private.entries add column if not exists coworker_ids bigint[] not null default '{}';
+create index if not exists entries_coworkers_idx on private.entries using gin (coworker_ids);
 
 create table if not exists private.audit_log (
   id             bigint generated always as identity primary key,
@@ -275,6 +278,48 @@ begin
   return null;
 end $$;
 
+/** Danh sách id người làm cùng: mảng số, không trùng, tối đa 10, phải là tài khoản đang hoạt động */
+create or replace function private.check_coworkers(p jsonb)
+returns jsonb language plpgsql set search_path = '' as $$
+declare ids bigint[]; ok boolean := true;
+begin
+  if p is null or p = 'null'::jsonb then return '[]'::jsonb; end if;
+  if jsonb_typeof(p) <> 'array' then ok := false; end if;
+  if ok then
+    begin
+      select coalesce(array_agg(distinct (x #>> '{}')::bigint), '{}') into ids from jsonb_array_elements(p) x;
+    exception when others then
+      ok := false;
+    end;
+  end if;
+  if not ok then perform private.err(400, 'Danh sách người làm cùng không hợp lệ.'); end if;
+  if cardinality(ids) > 10 then perform private.err(400, 'Chỉ chọn tối đa 10 người làm cùng.'); end if;
+  if exists (select 1 from unnest(ids) i
+              where not exists (select 1 from private.users u where u.id = i and u.status = 'active')) then
+    perform private.err(400, 'Người làm cùng không tồn tại hoặc đã bị khóa.');
+  end if;
+  return to_jsonb(ids);
+end $$;
+
+/** Bỏ người nhập ra khỏi danh sách người làm cùng (jsonb mảng số) */
+create or replace function private.without_owner(p jsonb, p_owner bigint)
+returns jsonb language sql immutable set search_path = '' as $$
+  select coalesce(jsonb_agg(x order by (x #>> '{}')::bigint), '[]'::jsonb)
+    from jsonb_array_elements(coalesce(p, '[]'::jsonb)) x where (x #>> '{}')::bigint <> p_owner
+$$;
+
+create or replace function private.jsonb_ids(p jsonb)
+returns bigint[] language sql immutable set search_path = '' as $$
+  select coalesce(array(select (x #>> '{}')::bigint from jsonb_array_elements(coalesce(p, '[]'::jsonb)) x), '{}')
+$$;
+
+/** Họ tên theo danh sách id (giữ thứ tự) */
+create or replace function private.user_names(p_ids bigint[])
+returns jsonb language sql stable set search_path = '' as $$
+  select coalesce(jsonb_agg(u.full_name order by array_position(p_ids, u.id)), '[]'::jsonb)
+    from private.users u where u.id = any (p_ids)
+$$;
+
 /** Chuẩn hóa dữ liệu 1 dòng công việc. p_partial = true khi cập nhật từng phần */
 create or replace function private.entry_input(p jsonb, p_partial boolean)
 returns jsonb language plpgsql set search_path = '' as $$
@@ -301,6 +346,9 @@ begin
   if not p_partial or p ? 'note' then
     o := o || jsonb_build_object('note', private.check_text(p ->> 'note', 4000));
   end if;
+  if not p_partial or p ? 'coworker_ids' then
+    o := o || jsonb_build_object('coworker_ids', private.check_coworkers(p -> 'coworker_ids'));
+  end if;
   return o;
 end $$;
 
@@ -315,7 +363,8 @@ end $$;
 create or replace function private.entry_json(e private.entries)
 returns jsonb language sql stable set search_path = '' as $$
   select jsonb_build_object('machine', e.machine, 'description', e.description, 'start_at', e.start_at,
-                            'end_at', e.end_at, 'completion', e.completion, 'note', e.note)
+                            'end_at', e.end_at, 'completion', e.completion, 'note', e.note,
+                            'coworker_ids', to_jsonb(e.coworker_ids))
 $$;
 
 create or replace function private.log(p_report_id bigint, p_entry_id bigint, p_user_id bigint, p_action text,
@@ -361,6 +410,7 @@ begin
            'id', e.id, 'user_id', e.user_id, 'user_name', eu.full_name, 'machine', e.machine,
            'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
            'completion', e.completion, 'note', e.note, 'updated_at', private.vn(e.updated_at),
+           'coworker_ids', to_jsonb(e.coworker_ids), 'coworker_names', private.user_names(e.coworker_ids),
            'can_edit', v_manage or (e.user_id = u.id and r.status = 'draft'))
          order by coalesce(e.start_at, '9999'), e.id), '[]'::jsonb)
     into v_entries
@@ -586,13 +636,16 @@ begin
                         from unnest(private.teams()) t),
     'entries', coalesce((
       select jsonb_agg(jsonb_build_object(
-               'id', e.id, 'team', r.team, 'user_name', u.full_name, 'machine', e.machine,
+               'id', e.id, 'team', r.team, 'user_id', e.user_id, 'user_name', ow.full_name, 'machine', e.machine,
                'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
-               'completion', e.completion, 'note', e.note,
-               'can_edit', private.can_manage(u, r.team) or r.status = 'draft')
+               'completion', e.completion, 'note', e.note, 'is_owner', e.user_id = u.id,
+               'coworker_ids', to_jsonb(e.coworker_ids), 'coworker_names', private.user_names(e.coworker_ids),
+               'can_edit', private.can_manage(u, r.team) or (e.user_id = u.id and r.status = 'draft'))
              order by coalesce(e.start_at, '9999'), e.id)
-        from private.entries e join private.reports r on r.id = e.report_id
-       where e.user_id = u.id and r.report_date = d), '[]'::jsonb));
+        from private.entries e
+        join private.reports r on r.id = e.report_id
+        join private.users ow on ow.id = e.user_id
+       where (e.user_id = u.id or u.id = any (e.coworker_ids)) and r.report_date = d), '[]'::jsonb));
 end $$;
 
 create or replace function public.add_entry(p_token text, p_date text, p_team text, p_entry jsonb)
@@ -608,9 +661,10 @@ begin
   if r.status = 'approved' and not private.can_manage(u, p_team) then
     perform private.err(403, 'Báo cáo ngày này của nhóm đã được phê duyệt, không thể thêm dòng mới.');
   end if;
-  insert into private.entries (report_id, user_id, machine, description, start_at, end_at, completion, note)
+  v := jsonb_set(v, '{coworker_ids}', private.without_owner(v -> 'coworker_ids', u.id));
+  insert into private.entries (report_id, user_id, machine, description, start_at, end_at, completion, note, coworker_ids)
   values (r.id, u.id, v ->> 'machine', v ->> 'description', v ->> 'start_at', v ->> 'end_at',
-          (v ->> 'completion')::int, v ->> 'note')
+          (v ->> 'completion')::int, v ->> 'note', private.jsonb_ids(v -> 'coworker_ids'))
   returning id into v_id;
   perform private.log(r.id, v_id, u.id, 'create', r.status = 'approved', null, v);
   return jsonb_build_object('ok', true, 'id', v_id);
@@ -642,6 +696,7 @@ begin
   select * into e from private.entries where id = p_id;
   v_old := private.entry_json(e);
   v_new := v_old || private.entry_input(p_entry, true);
+  v_new := jsonb_set(v_new, '{coworker_ids}', private.without_owner(v_new -> 'coworker_ids', e.user_id));
   perform private.check_time_order(v_new);
   select jsonb_object_agg(k, v_old -> k), jsonb_object_agg(k, v_new -> k) into v_old_diff, v_new_diff
     from jsonb_object_keys(v_new) k where v_new -> k is distinct from v_old -> k;
@@ -649,7 +704,7 @@ begin
   update private.entries
      set machine = v_new ->> 'machine', description = v_new ->> 'description', start_at = v_new ->> 'start_at',
          end_at = v_new ->> 'end_at', completion = (v_new ->> 'completion')::int, note = v_new ->> 'note',
-         updated_at = now()
+         coworker_ids = private.jsonb_ids(v_new -> 'coworker_ids'), updated_at = now()
    where id = p_id;
   perform private.log(r.id, p_id, u.id, 'update', r.status = 'approved', v_old_diff, v_new_diff);
   return jsonb_build_object('ok', true);
@@ -664,6 +719,71 @@ begin
   delete from private.entries where id = p_id;
   perform private.log(r.id, p_id, u.id, 'delete', r.status = 'approved', private.entry_json(e), null);
   return jsonb_build_object('ok', true);
+end $$;
+
+/** Danh sách tài khoản đang hoạt động để chọn "người làm cùng" */
+create or replace function public.list_coworkers(p_token text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token);
+begin
+  return jsonb_build_object('users', coalesce((
+    select jsonb_agg(jsonb_build_object('id', x.id, 'full_name', x.full_name, 'team', x.team)
+           order by array_position(private.teams(), x.team) nulls last, x.full_name)
+      from private.users x where x.status = 'active'), '[]'::jsonb));
+end $$;
+
+-- ===== Dung lượng & sao lưu (Admin) =====
+create or replace function public.admin_storage(p_token text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token);
+begin
+  perform private.require_admin(u);
+  return jsonb_build_object(
+    'db_bytes', pg_catalog.pg_database_size(pg_catalog.current_database()),
+    'limit_bytes', 500 * 1024 * 1024,
+    'users', (select count(*) from private.users),
+    'reports', (select count(*) from private.reports),
+    'entries', (select count(*) from private.entries),
+    'audit_log', (select count(*) from private.audit_log),
+    'first_date', (select min(report_date) from private.reports),
+    'last_date', (select max(report_date) from private.reports));
+end $$;
+
+/** Toàn bộ dữ liệu để sao lưu ra Excel (KHÔNG gồm mật khẩu / phiên đăng nhập) */
+create or replace function public.admin_backup(p_token text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token);
+begin
+  perform private.require_admin(u);
+  return jsonb_build_object(
+    'generated_at', private.vn(now()),
+    'users', coalesce((
+      select jsonb_agg(jsonb_build_object('id', x.id, 'username', x.username, 'full_name', x.full_name,
+               'role', x.role, 'team', x.team, 'status', x.status, 'manager_all', x.manager_all,
+               'manager_teams', to_jsonb(x.manager_teams), 'created_at', private.vn(x.created_at)) order by x.id)
+        from private.users x), '[]'::jsonb),
+    'reports', coalesce((
+      select jsonb_agg(jsonb_build_object('id', r.id, 'date', r.report_date, 'team', r.team, 'status', r.status,
+               'approved_by', ap.full_name, 'approved_at', private.vn(r.approved_at),
+               'entries', (select count(*) from private.entries e where e.report_id = r.id))
+             order by r.report_date, array_position(private.teams(), r.team))
+        from private.reports r left join private.users ap on ap.id = r.approved_by), '[]'::jsonb),
+    'entries', coalesce((
+      select jsonb_agg(jsonb_build_object('id', e.id, 'date', r.report_date, 'team', r.team, 'report_status', r.status,
+               'user_name', ow.full_name, 'coworker_names', private.user_names(e.coworker_ids),
+               'machine', e.machine, 'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
+               'completion', e.completion, 'note', e.note,
+               'created_at', private.vn(e.created_at), 'updated_at', private.vn(e.updated_at))
+             order by r.report_date, array_position(private.teams(), r.team), coalesce(e.start_at, '9999'), e.id)
+        from private.entries e join private.reports r on r.id = e.report_id join private.users ow on ow.id = e.user_id),
+      '[]'::jsonb),
+    'audit_log', coalesce((
+      select jsonb_agg(jsonb_build_object('id', a.id, 'created_at', private.vn(a.created_at), 'date', r.report_date,
+               'team', r.team, 'user_name', au.full_name, 'action', a.action, 'after_approval', a.after_approval,
+               'entry_id', a.entry_id, 'old_value', a.old_value, 'new_value', a.new_value) order by a.id)
+        from private.audit_log a
+        left join private.reports r on r.id = a.report_id
+        join private.users au on au.id = a.user_id), '[]'::jsonb));
 end $$;
 
 -- ===== Báo cáo tổng hợp (Quản lý / Admin) =====
@@ -771,7 +891,7 @@ declare f record;
                             'admin_list_users', 'admin_set_status', 'admin_update_user', 'admin_reset_password',
                             'my_entries', 'add_entry', 'update_entry', 'delete_entry',
                             'reports_of_day', 'reports_month', 'report_history', 'approve_report',
-                            'unapprove_report', 'report_export'];
+                            'unapprove_report', 'report_export', 'list_coworkers', 'admin_storage', 'admin_backup'];
         roles text := '';
 begin
   if exists (select 1 from pg_roles where rolname = 'anon') then roles := roles || ', anon'; end if;
