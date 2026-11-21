@@ -1,13 +1,15 @@
 'use strict';
 /* =============== Báo cáo công việc hàng ngày – giao diện =============== */
 const TEAMS = ['Điện', 'Cơ Khí', 'PM'];
+const SHIFTS = ['Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'];
+const DEFAULT_SHIFT = 'Hành chính';
 const TEAM_CLASS = { 'Điện': 'dien', 'Cơ Khí': 'cokhi', PM: 'pm' };
 const ROLE_LABEL = { admin: 'Admin', manager: 'Quản lý', staff: 'Nhân viên' };
 const STATUS_LABEL = { pending: 'Chờ duyệt', active: 'Hoạt động', rejected: 'Bị từ chối', locked: 'Đã khóa' };
-const FIELD_LABEL = { machine: 'Tên máy', description: 'Diễn giải', start_at: 'Bắt đầu', end_at: 'Kết thúc', completion: 'Trạng thái', note: 'Tình trạng máy / Ghi chú', coworker_ids: 'Người làm cùng' };
+const FIELD_LABEL = { machine: 'Tên máy', description: 'Diễn giải', start_at: 'Bắt đầu', end_at: 'Kết thúc', completion: 'Trạng thái', note: 'Tình trạng máy / Ghi chú', coworker_ids: 'Người làm cùng', shift: 'Ca làm việc' };
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-const state = { user: null, date: today(), team: null, mgrDate: today(), mgrMonth: today().slice(0, 7), adminTab: 'pending' };
+const state = { user: null, date: today(), team: null, shift: DEFAULT_SHIFT, mgrDate: today(), mgrMonth: today().slice(0, 7), adminTab: 'pending' };
 
 /* ---------- Tiện ích ---------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -20,6 +22,27 @@ function esc(s) {
 function pad(n) { return String(n).padStart(2, '0'); }
 function today() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 function nowHM() { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+/** Cộng/trừ ngày cho chuỗi yyyy-mm-dd */
+function addDays(date, n) {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+/** Chuẩn hóa giờ gõ tay: "730", "0730", "7:30", "7h30", "7h", "7" → "07:30"/"07:00". '' nếu trống, null nếu sai */
+function normalizeHM(v) {
+  const t = String(v || '').trim().toLowerCase().replace(/[h.,;\s]+/g, ':').replace(/:$/, '');
+  if (!t) return '';
+  let h;
+  let m;
+  let x = t.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (x) { h = x[1]; m = x[2].length === 1 ? `${x[2]}0` : x[2]; }
+  else if ((x = t.match(/^\d{1,4}$/))) {
+    if (t.length <= 2) { h = t; m = '0'; } else { h = t.slice(0, t.length - 2); m = t.slice(-2); }
+  } else return null;
+  h = Number(h); m = Number(m);
+  if (h > 23 || m > 59) return null;
+  return `${pad(h)}:${pad(m)}`;
+}
 function dmy(date) { const [y, m, d] = date.split('-'); return `${d}/${m}/${y}`; }
 function weekday(date) {
   const names = ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'];
@@ -41,6 +64,7 @@ function reportBadge(status) {
   return status === 'approved' ? '<span class="badge badge-ok">✓ Đã phê duyệt</span>' : '<span class="badge badge-info">Đang nhập</span>';
 }
 function teamTag(t) { return `<span class="team-tag t-${TEAM_CLASS[t]}">${esc(t)}</span>`; }
+function shiftTag(s) { const v = s || DEFAULT_SHIFT; return `<span class="shift-tag ${v === DEFAULT_SHIFT ? '' : 'sh-ca'}">${esc(v)}</span>`; }
 
 /* ---------- Kết nối Supabase (gọi hàm API qua /rest/v1/rpc) ---------- */
 const CFG = window.APP_CONFIG || {};
@@ -219,20 +243,23 @@ function bindCoworkers(root) {
 function entryFormHTML(e, date) {
   const c = e ? e.completion : 100;
   const done = c >= 100;
-  const start = e ? e.start_at || '' : `${date}T${date === today() ? nowHM() : '07:30'}`;
+  // ngày tự lấy theo ngày báo cáo (dòng cũ: giữ ngày bắt đầu đã lưu)
+  const base = e && e.start_at ? e.start_at.slice(0, 10) : date;
   return `
-    <div class="stack">
+    <div class="stack" data-base="${esc(base)}">
       <label class="field"><span>Diễn giải công việc (tên công việc) <span class="req">*</span></span>
         <textarea name="description" rows="3" maxlength="4000" required placeholder="VD: Thay vòng bi motor quạt hút, vệ sinh tủ điện...">${esc(e?.description)}</textarea></label>
+      ${e ? `<label class="field"><span>Ca làm việc</span>
+        <select name="shift">${SHIFTS.map((x) => `<option ${x === (e.shift || DEFAULT_SHIFT) ? 'selected' : ''}>${x}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Tên máy</span>
         <input name="machine" maxlength="200" autocomplete="off" placeholder="VD: Máy ép viên số 2" value="${esc(e?.machine)}"></label>
-      <div class="field-row">
-        <label class="field"><span>Thời gian bắt đầu</span>
-          <input type="datetime-local" name="start_at" value="${esc(start)}"></label>
-        <label class="field"><span>Thời gian kết thúc</span>
-          <input type="datetime-local" name="end_at" value="${esc(e?.end_at || '')}"></label>
+      <div class="field-row time-row">
+        <label class="field"><span>Giờ bắt đầu</span>
+          <input name="start_hm" class="time-in" inputmode="numeric" maxlength="5" autocomplete="off" placeholder="VD: 07:30" value="${esc(e?.start_at ? e.start_at.slice(11, 16) : '')}"></label>
+        <label class="field"><span>Giờ kết thúc</span>
+          <input name="end_hm" class="time-in" inputmode="numeric" maxlength="5" autocomplete="off" placeholder="VD: 09:00" value="${esc(e?.end_at ? e.end_at.slice(11, 16) : '')}"></label>
       </div>
-      <p class="hint">Có thể chọn giờ kết thúc sang ngày hôm sau nếu làm qua đêm.</p>
+      <p class="hint" data-time-hint></p>
       ${coworkerFieldHTML(e)}
       <div class="field"><span>Trạng thái hoàn thành</span>
         <div>
@@ -265,7 +292,30 @@ function bindEntryForm(root) {
     })
   );
   $$('[data-chip]', root).forEach((b) => b.addEventListener('click', () => { $('[name=pct]', root).value = b.dataset.chip; }));
+  $$('.time-in', root).forEach((i) => {
+    i.addEventListener('blur', () => {
+      const v = normalizeHM(i.value);
+      if (v !== null) i.value = v;
+      i.classList.toggle('invalid', v === null);
+      updateTimeHint(root);
+    });
+    i.addEventListener('input', () => { i.classList.remove('invalid'); updateTimeHint(root); });
+  });
+  updateTimeHint(root);
   bindCoworkers(root);
+}
+
+/** Dòng nhắc dưới ô giờ: ngày theo báo cáo, báo khi giờ kết thúc sang hôm sau */
+function updateTimeHint(root) {
+  const box = $('[data-base]', root);
+  const hint = $('[data-time-hint]', root);
+  if (!box || !hint) return;
+  const base = box.dataset.base;
+  const sh = normalizeHM($('[name=start_hm]', root).value);
+  const eh = normalizeHM($('[name=end_hm]', root).value);
+  let txt = `Ngày: ${weekday(base)}, ${dmy(base)} (lấy theo ô "Ngày báo cáo" đã chọn). Gõ giờ dạng 07:30 hoặc 0730.`;
+  if (sh && eh && eh < sh) txt += ` Giờ kết thúc nhỏ hơn giờ bắt đầu → tính sang ngày ${dmy(addDays(base, 1))}.`;
+  hint.textContent = txt;
 }
 
 /** Rút gọn chữ dài (dùng khi nhắc tên công việc) */
@@ -280,11 +330,17 @@ function readEntryForm(root) {
   const data = {
     machine: val('machine').trim(),
     description: val('description').trim(),
-    start_at: val('start_at') || '',
-    end_at: val('end_at') || '',
     note: val('note').trim(),
   };
   const errs = [];
+  const base = $('[data-base]', root).dataset.base;
+  const sh = normalizeHM(val('start_hm'));
+  const eh = normalizeHM(val('end_hm'));
+  if (sh === null) errs.push('Giờ bắt đầu không hợp lệ (gõ dạng 07:30 hoặc 0730).');
+  if (eh === null) errs.push('Giờ kết thúc không hợp lệ (gõ dạng 09:00 hoặc 0900).');
+  data.start_at = sh ? `${base}T${sh}` : '';
+  // giờ kết thúc nhỏ hơn giờ bắt đầu → làm qua đêm, sang ngày hôm sau
+  data.end_at = eh ? `${sh && eh < sh ? addDays(base, 1) : base}T${eh}` : '';
   if (!data.description) errs.push('Vui lòng nhập Diễn giải công việc (tên công việc).');
   const notDone = !$('[data-pct]', root).hidden;
   if (notDone) {
@@ -292,12 +348,10 @@ function readEntryForm(root) {
     if (!/^\d{1,2}$/.test(p) || Number(p) > 99) errs.push('Phần trăm hoàn thành phải là số nguyên từ 0 đến 99.');
     data.completion = `${p}%`;
   } else data.completion = 'OK';
-  // datetime-local có thể trả về giây → cắt về HH:mm
-  data.start_at = data.start_at.slice(0, 16);
-  data.end_at = data.end_at.slice(0, 16);
-  if (data.start_at && data.end_at && data.end_at < data.start_at) errs.push('Thời gian kết thúc phải sau thời gian bắt đầu.');
   const cw = $('[data-cw]', root);
   if (cw) data.coworker_ids = JSON.parse(cw.dataset.selected || '[]');
+  const shiftSel = $('[name=shift]', root);
+  if (shiftSel) data.shift = shiftSel.value;
   return { data, errs };
 }
 
@@ -319,6 +373,7 @@ function editEntryDialog(entry, reportDate, onSaved) {
     if (errs.length) return showFormError(form, errs[0]);
     // không gửi lại danh sách người làm cùng nếu không đổi (tránh lỗi khi có người vừa bị khóa)
     if (sameIds(data.coworker_ids, entry.coworker_ids)) delete data.coworker_ids;
+    if (data.shift === (entry.shift || DEFAULT_SHIFT)) delete data.shift;
     try {
       await rpc('update_entry', { p_id: entry.id, p_entry: data });
       closeDialog();
@@ -466,10 +521,19 @@ async function renderEntry() {
           <label class="field"><span>Ngày báo cáo</span><input type="date" id="f-date" value="${state.date}" required></label>
           <label class="field"><span>Nhóm</span><select id="f-team">${TEAMS.map((t) => `<option ${t === state.team ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
         </div>
+        <div class="field field-shift"><span>Ca làm việc</span>
+          <div class="seg seg-shift" id="f-shift" role="group" aria-label="Ca làm việc">
+            ${SHIFTS.map((x) => `<button type="button" data-shift="${x}">${x}</button>`).join('')}
+          </div>
+          <span class="hint" id="shift-hint"></span>
+        </div>
         <div id="lock-note" class="notice notice-ok" hidden></div>
         <form id="add-form" novalidate class="stack">
-          <div id="add-fields"></div>
-          <button class="btn btn-block" type="submit">+ Thêm dòng công việc</button>
+          <div id="add-items" class="stack"></div>
+          <button type="button" class="btn btn-ghost btn-block btn-add-job" id="add-more">+ Thêm công việc</button>
+          <div class="form-error" id="batch-err" hidden></div>
+          <button class="btn btn-block" type="submit" id="send-btn">Gửi báo cáo</button>
+          <p class="hint center">Nhập hết các công việc trong ngày rồi bấm <strong>Gửi báo cáo</strong> một lần.</p>
         </form>
       </section>
       <section>
@@ -479,32 +543,106 @@ async function renderEntry() {
     </div>`;
 
   const form = $('#add-form');
-  const resetForm = () => { $('#add-fields').innerHTML = entryFormHTML(null, state.date); bindEntryForm(form); };
-  resetForm();
+  const items = $('#add-items');
+  const sendBtn = $('#send-btn');
+  const batchErr = $('#batch-err');
 
+  /** Khung công việc còn trống hoàn toàn (bỏ qua khi gửi) */
+  const isBlank = (it) => ['description', 'machine', 'start_hm', 'end_hm', 'note']
+    .every((n) => !$(`[name=${n}]`, it).value.trim()) && !JSON.parse($('[data-cw]', it)?.dataset.selected || '[]').length;
+
+  const refresh = () => {
+    const all = $$('[data-item]', items);
+    all.forEach((it, i) => {
+      $('[data-item-title]', it).textContent = `Công việc ${i + 1}`;
+      $('[data-rm-item]', it).hidden = all.length === 1;
+    });
+    const n = all.filter((it) => !isBlank(it)).length;
+    sendBtn.textContent = n > 1 ? `Gửi báo cáo (${n} công việc)` : 'Gửi báo cáo';
+  };
+
+  const addItem = (focus) => {
+    if ($$('[data-item]', items).length >= 30) return toast('Mỗi lần gửi tối đa 30 công việc.', true);
+    const it = document.createElement('div');
+    it.className = 'job-item';
+    it.dataset.item = '';
+    it.innerHTML = `<div class="job-head"><strong data-item-title></strong>
+      <button type="button" class="btn btn-ghost btn-sm" data-rm-item aria-label="Bỏ công việc này">✕ Bỏ</button></div>
+      ${entryFormHTML(null, state.date)}`;
+    items.appendChild(it);
+    bindEntryForm(it);
+    $('[data-rm-item]', it).onclick = async () => {
+      if (!isBlank(it) && !(await confirmDialog('Bỏ công việc', 'Bỏ công việc đang nhập này (chưa gửi)?', 'Bỏ', true))) return;
+      it.remove();
+      refresh();
+    };
+    it.addEventListener('input', refresh);
+    refresh();
+    if (focus) { it.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('[name=description]', it).focus(); }
+  };
+  const resetItems = () => { items.innerHTML = ''; addItem(false); };
+  resetItems();
+
+  $('#add-more').onclick = () => addItem(true);
+
+  // Đổi ngày: giữ nguyên các công việc đang nhập, chỉ đổi ngày theo báo cáo
   $('#f-date').addEventListener('change', (e) => {
     if (!e.target.value) return;
     state.date = e.target.value;
-    resetForm();
+    $$('[data-item]', items).forEach((it) => { $('[data-base]', it).dataset.base = state.date; updateTimeHint(it); });
     loadMine();
   });
   $('#f-team').addEventListener('change', (e) => { state.team = e.target.value; loadMine(); });
 
+  // Ca làm việc: mặc định Hành chính, đi ca 1/2/3 thì bấm đổi
+  const paintShift = () => {
+    $$('[data-shift]').forEach((b) => {
+      const on = b.dataset.shift === state.shift;
+      b.className = on ? (state.shift === DEFAULT_SHIFT ? 'on-ok' : 'on-warn') : '';
+      b.setAttribute('aria-pressed', String(on));
+    });
+    $('#shift-hint').textContent = state.shift === DEFAULT_SHIFT
+      ? 'Mặc định ca Hành chính. Đi ca 1, 2, 3 thì bấm chọn ca tương ứng.'
+      : `Đang nhập cho ${state.shift}. Báo cáo ${state.shift} được xuất ra file Excel riêng.`;
+  };
+  $$('[data-shift]').forEach((b) => (b.onclick = () => { state.shift = b.dataset.shift; paintShift(); loadMine(); }));
+  paintShift();
+
+  // Nhắc khi rời trang mà còn công việc chưa gửi
+  window.onbeforeunload = () => ($('#add-items') && $$('[data-item]', items).some((it) => !isBlank(it)) ? true : undefined);
+
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
-    $('[data-err]', form).hidden = true;
-    const { data, errs } = readEntryForm(form);
-    if (errs.length) return showFormError(form, errs[0]);
-    const btn = $('button[type=submit]', form);
-    btn.disabled = true;
+    batchErr.hidden = true;
+    $$('[data-err]', items).forEach((b) => { b.hidden = true; });
+    const all = $$('[data-item]', items);
+    const filled = all.filter((it) => !isBlank(it));
+    if (!filled.length) {
+      showFormError(all[0], 'Vui lòng nhập Diễn giải công việc (tên công việc).');
+      $('[name=description]', all[0]).focus();
+      return;
+    }
+    const entries = [];
+    let firstBad = null;
+    for (const it of filled) {
+      const { data, errs } = readEntryForm(it);
+      if (errs.length) { showFormError(it, errs[0]); firstBad = firstBad || it; }
+      entries.push(data);
+    }
+    if (firstBad) { firstBad.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    sendBtn.disabled = true;
     try {
-      await rpc('add_entry', { p_date: state.date, p_team: state.team, p_entry: data });
-      toast('Đã thêm dòng công việc.');
-      resetForm();
-      $('[name=description]', form).focus();
+      const r = await rpc('add_entries', { p_date: state.date, p_team: state.team, p_shift: state.shift, p_entries: entries });
+      toast(`Đã gửi ${r.count} công việc (${state.shift}).`);
+      resetItems();
       loadMine();
-    } catch (err) { showFormError(form, err.message); }
-    finally { btn.disabled = false; }
+    } catch (err) {
+      // máy chủ báo "Công việc N: ..." → hiện lỗi ngay tại khung đó
+      const m = /^Công việc (\d+): (.*)$/s.exec(err.message);
+      const it = m && filled[Number(m[1]) - 1];
+      if (it) { showFormError(it, m[2]); it.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      else { batchErr.textContent = err.message; batchErr.hidden = false; }
+    } finally { sendBtn.disabled = false; refresh(); }
   });
 
   loadMine();
@@ -519,12 +657,14 @@ async function loadMine() {
   catch (err) { list.innerHTML = `<div class="form-error">${esc(err.message)}</div>`; return; }
 
   // Báo cáo nhóm đang chọn đã duyệt? (quản lý của nhóm vẫn thêm được)
-  const approved = r.report_status[state.team] === 'approved';
+  const approved = ((r.report_statuses || {})[state.team] || {})[state.shift] === 'approved';
   const canManage = state.user.viewable_teams.includes(state.team);
   const note = $('#lock-note');
   note.hidden = !approved;
-  note.innerHTML = approved ? `🔒 Báo cáo nhóm ${esc(state.team)} ngày ${dmy(state.date)} đã được phê duyệt.${canManage ? ' Bạn có quyền quản lý nên vẫn sửa được (sẽ ghi lịch sử).' : ' Không thể thêm hoặc sửa nữa.'}` : '';
-  $('#add-form button[type=submit]').disabled = approved && !canManage;
+  note.innerHTML = approved ? `🔒 Báo cáo nhóm ${esc(state.team)} (${esc(state.shift)}) ngày ${dmy(state.date)} đã được phê duyệt.${canManage ? ' Bạn có quyền quản lý nên vẫn sửa được (sẽ ghi lịch sử).' : ' Không thể thêm hoặc sửa nữa.'}` : '';
+  const locked = approved && !canManage;
+  $('#send-btn').disabled = locked;
+  $('#add-more').disabled = locked;
 
   $('#list-count').textContent = r.entries.length ? `${r.entries.length} dòng` : '';
   if (!r.entries.length) {
@@ -534,8 +674,8 @@ async function loadMine() {
   list.innerHTML = r.entries.map((e) => `
     <article class="entry e-${TEAM_CLASS[e.team]}" data-id="${e.id}">
       <div class="entry-head">
-        <div class="row"><span class="entry-machine">${e.machine ? esc(e.machine) : '<span class="muted">(không ghi tên máy)</span>'}</span>${teamTag(e.team)}</div>
-        <div class="row">${completionBadge(e.completion)}${r.report_status[e.team] === 'approved' ? '<span class="badge badge-muted">🔒 Đã duyệt</span>' : ''}</div>
+        <div class="row"><span class="entry-machine">${e.machine ? esc(e.machine) : '<span class="muted">(không ghi tên máy)</span>'}</span>${teamTag(e.team)}${shiftTag(e.shift)}</div>
+        <div class="row">${completionBadge(e.completion)}${e.report_status === 'approved' ? '<span class="badge badge-muted">🔒 Đã duyệt</span>' : ''}</div>
       </div>
       <div class="entry-time">${e.start_at ? esc(fmtTime(e.start_at, state.date)) : '—'} → ${e.end_at ? esc(fmtTime(e.end_at, state.date)) : '<span class="miss">chưa nhập giờ kết thúc</span>'}</div>
       ${e.description ? `<div class="entry-body pre">${esc(e.description)}</div>` : '<div class="entry-body muted small">Chưa có diễn giải</div>'}
@@ -561,7 +701,7 @@ async function renderManager() {
   view().className = 'view';
   view().innerHTML = `
     <div class="page-head">
-      <div><h1>Quản lý báo cáo</h1><p class="muted">Mỗi ngày có 3 báo cáo tổng hợp: Điện, Cơ Khí, PM.</p></div>
+      <div><h1>Quản lý báo cáo</h1><p class="muted">Mỗi nhóm, mỗi ca (Hành chính, Ca 1, Ca 2, Ca 3) là 1 báo cáo và 1 file Excel riêng.</p></div>
     </div>
     <div class="mgr">
       <aside class="card sticky-side">
@@ -634,10 +774,10 @@ async function loadReports() {
     const missByEntry = Object.fromEntries(rep.missing.map((m) => [m.entry_id, m.fields]));
     const approved = rep.status === 'approved';
     return `
-    <section class="card report-card r-${TEAM_CLASS[rep.team]}" data-team="${esc(rep.team)}">
+    <section class="card report-card r-${TEAM_CLASS[rep.team]}" data-key="${esc(rep.team + '|' + rep.shift)}">
       <div class="report-head">
         <div>
-          <div class="report-title"><h2>Báo cáo nhóm ${esc(rep.team)}</h2>${reportBadge(rep.status)}</div>
+          <div class="report-title"><h2>Báo cáo nhóm ${esc(rep.team)}</h2>${shiftTag(rep.shift)}${reportBadge(rep.status)}</div>
           <div class="report-meta">${rep.entries.length} dòng công việc${approved && rep.approved_by_name ? ` · Duyệt bởi ${esc(rep.approved_by_name)} lúc ${esc(rep.approved_at)}` : ''}</div>
         </div>
         <div class="report-actions">
@@ -671,9 +811,10 @@ async function loadReports() {
   }).join('');
 
   r.reports.forEach((rep) => rep.entries.forEach((e) => rememberNames(e.coworker_ids, e.coworker_names)));
-  const byTeam = Object.fromEntries(r.reports.map((rep) => [rep.team, rep]));
+  const byKey = Object.fromEntries(r.reports.map((rep) => [`${rep.team}|${rep.shift}`, rep]));
   $$('.report-card', box).forEach((card) => {
-    const rep = byTeam[card.dataset.team];
+    const rep = byKey[card.dataset.key];
+    rep.entries.forEach((e) => { e.shift = rep.shift; });
     const refresh = () => { loadReports(); loadCalendar(); };
     $$('[data-act]', card).forEach((b) => (b.onclick = () => reportAction(b.dataset.act, rep, refresh)));
     const byId = Object.fromEntries(rep.entries.map((e) => [e.id, e]));
@@ -691,16 +832,16 @@ async function loadReports() {
 }
 
 async function reportAction(act, rep, refresh) {
-  const body = { p_date: rep.date, p_team: rep.team };
+  const body = { p_date: rep.date, p_team: rep.team, p_shift: rep.shift };
   try {
     if (act === 'approve') {
-      const msg = `Phê duyệt báo cáo nhóm ${rep.team} ngày ${dmy(rep.date)}?\nSau khi duyệt, nhân viên không thể sửa hoặc xóa dòng của mình.` +
+      const msg = `Phê duyệt báo cáo nhóm ${rep.team} (${rep.shift}) ngày ${dmy(rep.date)}?\nSau khi duyệt, nhân viên không thể sửa hoặc xóa dòng của mình.` +
         (rep.missing.length ? `\n\nLưu ý: còn ${rep.missing.length} dòng thiếu thông tin.` : '');
       if (!(await confirmDialog('Phê duyệt báo cáo', msg, 'Phê duyệt'))) return;
       toast((await rpc('approve_report', body)).message);
       refresh();
     } else if (act === 'unapprove') {
-      if (!(await confirmDialog('Hủy phê duyệt', `Mở lại báo cáo nhóm ${rep.team} ngày ${dmy(rep.date)} cho nhân viên sửa?`, 'Hủy phê duyệt', true))) return;
+      if (!(await confirmDialog('Hủy phê duyệt', `Mở lại báo cáo nhóm ${rep.team} (${rep.shift}) ngày ${dmy(rep.date)} cho nhân viên sửa?`, 'Hủy phê duyệt', true))) return;
       toast((await rpc('unapprove_report', body)).message);
       refresh();
     } else if (act === 'export') {
@@ -715,7 +856,7 @@ async function exportExcel(rep) {
   // Máy chủ kiểm tra quyền + độ đầy đủ rồi mới trả dữ liệu
   let data;
   try {
-    data = await rpc('report_export', { p_date: rep.date, p_team: rep.team });
+    data = await rpc('report_export', { p_date: rep.date, p_team: rep.team, p_shift: rep.shift });
   } catch (err) {
     if (Array.isArray(err.details) && err.details.length) {
       openDialog('Chưa thể xuất Excel', `
@@ -737,7 +878,7 @@ async function exportExcel(rep) {
   ]);
   const wb = await window.ExcelExport.buildWorkbook(ExcelJS, template, data);
   const buf = await wb.xlsx.writeBuffer();
-  downloadBlob(new Blob([buf], { type: XLSX_TYPE }), window.ExcelExport.exportFileName(data.team, data.date));
+  downloadBlob(new Blob([buf], { type: XLSX_TYPE }), window.ExcelExport.exportFileName(data.team, data.date, data.shift));
 }
 
 function downloadBlob(blob, name) {
@@ -760,7 +901,7 @@ function fmtVal(k, v) {
   return v;
 }
 async function showHistory(rep) {
-  const [r] = await Promise.all([rpc('report_history', { p_date: rep.date, p_team: rep.team }), loadCoworkers().catch(() => null)]);
+  const [r] = await Promise.all([rpc('report_history', { p_date: rep.date, p_team: rep.team, p_shift: rep.shift }), loadCoworkers().catch(() => null)]);
   const body = r.items.length ? r.items.map((h) => {
     const keys = Object.keys(h.new_value || h.old_value || {});
     const diff = h.action === 'update'
@@ -772,7 +913,7 @@ async function showHistory(rep) {
       <span class="small muted">${esc(h.created_at)}</span></div>
       <div class="small">Người thực hiện: ${esc(h.user_name)}</div>${diff}</div>`;
   }).join('') : '<div class="empty">Chưa có lịch sử.</div>';
-  openDialog(`Lịch sử · ${rep.team} · ${dmy(rep.date)}`, body, '<button class="btn" data-close>Đóng</button>', true);
+  openDialog(`Lịch sử · ${rep.team} · ${rep.shift} · ${dmy(rep.date)}`, body, '<button class="btn" data-close>Đóng</button>', true);
 }
 
 /* ---------- Trang quản trị tài khoản (Admin) ---------- */

@@ -22,9 +22,18 @@
 
   var TEAM_SLUG = { 'Điện': 'Dien', 'Cơ Khí': 'CoKhi', PM: 'PM' };
 
-  function exportFileName(team, date) {
+  var SHIFT_SLUG = { 'Hành chính': 'HanhChinh', 'Ca 1': 'Ca1', 'Ca 2': 'Ca2', 'Ca 3': 'Ca3' };
+
+  /** Chữ điền sau "Ca:" trong file mẫu: "Hành chính", "1", "2", "3" */
+  function shiftText(shift) {
+    var s = shift || 'Hành chính';
+    return /^Ca \d$/.test(s) ? s.slice(3) : s;
+  }
+
+  function exportFileName(team, date, shift) {
     var p = date.split('-');
-    return 'BaoCao_' + (TEAM_SLUG[team] || team) + '_' + p[2] + '-' + p[1] + '-' + p[0] + '.xlsx';
+    var sh = SHIFT_SLUG[shift || 'Hành chính'] || String(shift).replace(/\s+/g, '');
+    return 'BaoCao_' + (TEAM_SLUG[team] || team) + '_' + sh + '_' + p[2] + '-' + p[1] + '-' + p[0] + '.xlsx';
   }
 
   /** "HH:mm", thêm "(dd/mm)" nếu khác ngày báo cáo (làm qua đêm) */
@@ -75,7 +84,7 @@
     // 1) Dòng Bộ phận / Ngày tháng năm
     var dp = report.date.split('-');
     ws.getCell(L.headerCell).value =
-      'Bộ phận: ' + report.team + '        Ca: ……………………        Ngày ' + dp[2] + '  Tháng ' + dp[1] + '  Năm ' + dp[0];
+      'Bộ phận: ' + report.team + '        Ca: ' + shiftText(report.shift) + '        Ngày ' + dp[2] + '  Tháng ' + dp[1] + '  Năm ' + dp[0];
 
     var entries = report.entries;
     var extra = Math.max(0, entries.length - L.templateDataRows);
@@ -204,14 +213,14 @@
     wb.creator = 'He thong bao cao cong viec';
 
     addSheet(wb, 'Dòng công việc', [
-      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['report_status', 'Trạng thái báo cáo', 15],
+      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['shift', 'Ca', 11], ['report_status', 'Trạng thái báo cáo', 15],
       ['machine', 'Tên máy', 24], ['description', 'Diễn giải công việc', 50],
       ['start', 'Bắt đầu', 17], ['end', 'Kết thúc', 17], ['completion', 'Hoàn thành', 11],
       ['note', 'Tình trạng máy / Ghi chú', 36], ['user', 'Người nhập', 22], ['coworkers', 'Người làm cùng', 30],
       ['created', 'Nhập lúc', 19], ['updated', 'Sửa lần cuối', 19], ['id', 'Mã dòng', 9],
     ], (data.entries || []).map(function (e) {
       return {
-        date: dmy(e.date), team: e.team, report_status: REPORT_STATUS[e.report_status] || e.report_status,
+        date: dmy(e.date), team: e.team, shift: e.shift || 'Hành chính', report_status: REPORT_STATUS[e.report_status] || e.report_status,
         machine: e.machine, description: e.description, start: dt(e.start_at), end: dt(e.end_at),
         completion: e.completion >= 100 ? 'OK' : e.completion + '%', note: e.note, user: e.user_name,
         coworkers: (e.coworker_names || []).join(', '), created: e.created_at, updated: e.updated_at, id: e.id,
@@ -219,11 +228,11 @@
     }));
 
     addSheet(wb, 'Báo cáo', [
-      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['status', 'Trạng thái', 15], ['entries', 'Số dòng', 9],
+      ['date', 'Ngày', 12], ['team', 'Nhóm', 9], ['shift', 'Ca', 11], ['status', 'Trạng thái', 15], ['entries', 'Số dòng', 9],
       ['approved_by', 'Người duyệt', 22], ['approved_at', 'Duyệt lúc', 19],
     ], (data.reports || []).map(function (r) {
       return {
-        date: dmy(r.date), team: r.team, status: REPORT_STATUS[r.status] || r.status, entries: r.entries,
+        date: dmy(r.date), team: r.team, shift: r.shift || 'Hành chính', status: REPORT_STATUS[r.status] || r.status, entries: r.entries,
         approved_by: r.approved_by || '', approved_at: r.approved_at || '',
       };
     }));
@@ -240,12 +249,12 @@
     }));
 
     addSheet(wb, 'Lịch sử chỉnh sửa', [
-      ['created', 'Thời gian', 19], ['date', 'Ngày báo cáo', 12], ['team', 'Nhóm', 9], ['user', 'Người thực hiện', 22],
+      ['created', 'Thời gian', 19], ['date', 'Ngày báo cáo', 12], ['team', 'Nhóm', 9], ['shift', 'Ca', 11], ['user', 'Người thực hiện', 22],
       ['action', 'Thao tác', 15], ['after', 'Sau phê duyệt', 12], ['entry', 'Mã dòng', 9],
       ['old', 'Giá trị cũ', 45], ['new', 'Giá trị mới', 45],
     ], (data.audit_log || []).map(function (a) {
       return {
-        created: a.created_at, date: dmy(a.date), team: a.team || '', user: a.user_name,
+        created: a.created_at, date: dmy(a.date), team: a.team || '', shift: a.shift || '', user: a.user_name,
         action: ACTION[a.action] || a.action, after: a.after_approval ? 'Có' : '', entry: a.entry_id || '',
         old: a.old_value ? JSON.stringify(a.old_value) : '', new: a.new_value ? JSON.stringify(a.new_value) : '',
       };
@@ -280,7 +289,7 @@
   }
 
   return {
-    buildWorkbook: buildWorkbook, exportFileName: exportFileName, fmtTime: fmtTime, LAYOUT: LAYOUT,
+    buildWorkbook: buildWorkbook, exportFileName: exportFileName, shiftText: shiftText, fmtTime: fmtTime, LAYOUT: LAYOUT,
     buildBackupWorkbook: buildBackupWorkbook, backupFileName: backupFileName, personText: personText,
   };
 });

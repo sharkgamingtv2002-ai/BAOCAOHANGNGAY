@@ -386,3 +386,22 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .purge-steps li > .field { max-width: 260px; margin-bottom: 8px; }
 .btn-danger-solid { background: var(--danger); color: #fff; }
 .purge code, .dlg code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: .85em; white-space: nowrap; }
+
+/* ----- Nhập nhiều công việc, gửi một lần ----- */
+.job-item { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; background: var(--surface-2); }
+.job-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.job-head strong { color: var(--brand); }
+.btn-add-job { border-style: dashed; border-color: var(--brand); color: var(--brand); }
+.time-row .time-in { font-size: 1.05rem; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.time-in.invalid { border-color: var(--danger); background: var(--danger-soft); }
+.time-row { grid-template-columns: 1fr 1fr; }
+@media (max-width: 420px) { .time-row { grid-template-columns: 1fr 1fr; } }
+.hint.center { text-align: center; }
+
+/* ----- Ca làm việc ----- */
+.seg-shift { display: grid; grid-template-columns: repeat(4, 1fr); width: 100%; }
+.seg-shift button { white-space: nowrap; padding-inline: 4px; }
+.shift-tag { display: inline-block; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--ok-soft); color: var(--ok); margin-left: 6px; vertical-align: middle; }
+.shift-tag.sh-ca { background: var(--warn-soft); color: var(--warn); }
+.field-shift { margin-top: 12px; }

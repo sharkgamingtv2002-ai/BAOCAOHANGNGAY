@@ -60,9 +60,17 @@ create table if not exists private.reports (
   team        text not null check (team in ('Điện', 'Cơ Khí', 'PM')),
   status      text not null default 'draft' check (status in ('draft', 'approved')),
   approved_by bigint references private.users (id),
-  approved_at timestamptz,
-  unique (report_date, team)
+  approved_at timestamptz
 );
+-- Ca làm việc (bản cập nhật 4): mỗi ngày + nhóm + ca là 1 báo cáo riêng. Dữ liệu cũ = ca Hành chính
+alter table private.reports add column if not exists shift text not null default 'Hành chính';
+alter table private.reports drop constraint if exists reports_report_date_team_key;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'reports_shift_check') then
+    alter table private.reports add constraint reports_shift_check check (shift in ('Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'));
+  end if;
+end $$;
+create unique index if not exists reports_day_team_shift_key on private.reports (report_date, team, shift);
 
 create table if not exists private.entries (
   id          bigint generated always as identity primary key,
@@ -113,6 +121,22 @@ create or replace function private.teams()
 returns text[] language sql immutable set search_path = '' as $$
   select array['Điện', 'Cơ Khí', 'PM']
 $$;
+
+create or replace function private.shifts()
+returns text[] language sql immutable set search_path = '' as $$
+  select array['Hành chính', 'Ca 1', 'Ca 2', 'Ca 3']
+$$;
+
+/** Ca làm việc: để trống → ca Hành chính (mặc định) */
+create or replace function private.check_shift(p_shift text)
+returns text language plpgsql set search_path = '' as $$
+declare v text := coalesce(nullif(btrim(p_shift), ''), 'Hành chính');
+begin
+  if not (v = any (private.shifts())) then
+    perform private.err(400, 'Ca làm việc không hợp lệ (Hành chính, Ca 1, Ca 2, Ca 3).');
+  end if;
+  return v;
+end $$;
 
 create or replace function private.hash_token(p_token text)
 returns text language sql immutable set search_path = '' as $$
@@ -393,16 +417,17 @@ returns jsonb language sql stable set search_path = '' as $$
   where cardinality(fields) > 0
 $$;
 
-/** Báo cáo tổng hợp (ngày + nhóm) dưới dạng JSON, kèm quyền sửa từng dòng */
-create or replace function private.report_payload(u private.users, p_date date, p_team text)
+/** Báo cáo tổng hợp (ngày + nhóm + ca) dưới dạng JSON, kèm quyền sửa từng dòng */
+drop function if exists private.report_payload(private.users, date, text);
+create or replace function private.report_payload(u private.users, p_date date, p_team text, p_shift text)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare r record; v_entries jsonb; v_manage boolean := private.can_manage(u, p_team);
 begin
   select rp.id, rp.status, rp.approved_at, au.full_name as approved_by_name into r
     from private.reports rp left join private.users au on au.id = rp.approved_by
-   where rp.report_date = p_date and rp.team = p_team;
+   where rp.report_date = p_date and rp.team = p_team and rp.shift = p_shift;
   if not found then
-    return jsonb_build_object('date', p_date, 'team', p_team, 'status', 'draft', 'approved_by_name', null,
+    return jsonb_build_object('date', p_date, 'team', p_team, 'shift', p_shift, 'status', 'draft', 'approved_by_name', null,
                               'approved_at', null, 'entries', '[]'::jsonb, 'missing', '[]'::jsonb);
   end if;
   select coalesce(jsonb_agg(jsonb_build_object(
@@ -415,7 +440,7 @@ begin
     into v_entries
     from private.entries e join private.users eu on eu.id = e.user_id
    where e.report_id = r.id;
-  return jsonb_build_object('date', p_date, 'team', p_team, 'status', r.status,
+  return jsonb_build_object('date', p_date, 'team', p_team, 'shift', p_shift, 'status', r.status,
                             'approved_by_name', r.approved_by_name, 'approved_at', private.vn(r.approved_at),
                             'entries', v_entries, 'missing', private.missing(r.id));
 end $$;
@@ -630,12 +655,14 @@ declare u private.users := private.auth_user(p_token); d date := private.check_d
 begin
   return jsonb_build_object(
     'date', d,
-    'report_status', (select jsonb_object_agg(t, coalesce((select r.status from private.reports r
-                                                            where r.report_date = d and r.team = t), 'draft'))
-                        from unnest(private.teams()) t),
+    -- trạng thái từng báo cáo trong ngày: { "Điện": { "Hành chính": "approved", ... }, ... }
+    'report_statuses', coalesce((select jsonb_object_agg(x.team, x.st) from (
+        select r.team, jsonb_object_agg(r.shift, r.status) as st
+          from private.reports r where r.report_date = d group by r.team) x), '{}'::jsonb),
     'entries', coalesce((
       select jsonb_agg(jsonb_build_object(
-               'id', e.id, 'team', r.team, 'user_id', e.user_id, 'user_name', ow.full_name, 'machine', e.machine,
+               'id', e.id, 'team', r.team, 'shift', r.shift, 'report_status', r.status,
+               'user_id', e.user_id, 'user_name', ow.full_name, 'machine', e.machine,
                'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
                'completion', e.completion, 'note', e.note, 'is_owner', e.user_id = u.id,
                'coworker_ids', to_jsonb(e.coworker_ids), 'coworker_names', private.user_names(e.coworker_ids),
@@ -647,18 +674,18 @@ begin
        where (e.user_id = u.id or u.id = any (e.coworker_ids)) and r.report_date = d), '[]'::jsonb));
 end $$;
 
-create or replace function public.add_entry(p_token text, p_date text, p_team text, p_entry jsonb)
+drop function if exists public.add_entry(text, text, text, jsonb);
+create or replace function public.add_entry(p_token text, p_date text, p_team text, p_entry jsonb, p_shift text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date);
-        v jsonb; r private.reports; v_id bigint;
+        v_shift text := private.check_shift(p_shift); v jsonb; r private.reports; v_id bigint;
 begin
   perform private.check_team(p_team);
   v := private.entry_input(p_entry, false);
   perform private.check_time_order(v);
-  insert into private.reports (report_date, team) values (d, p_team) on conflict do nothing;
-  select * into r from private.reports where report_date = d and team = p_team for update;
+  r := private.report_for_update(d, p_team, v_shift);
   if r.status = 'approved' and not private.can_manage(u, p_team) then
-    perform private.err(403, 'Báo cáo ngày này của nhóm đã được phê duyệt, không thể thêm dòng mới.');
+    perform private.err(403, 'Báo cáo ngày này của nhóm (' || v_shift || ') đã được phê duyệt, không thể thêm dòng mới.');
   end if;
   v := jsonb_set(v, '{coworker_ids}', private.without_owner(v -> 'coworker_ids', u.id));
   insert into private.entries (report_id, user_id, machine, description, start_at, end_at, completion, note, coworker_ids)
@@ -667,6 +694,54 @@ begin
   returning id into v_id;
   perform private.log(r.id, v_id, u.id, 'create', r.status = 'approved', null, v);
   return jsonb_build_object('ok', true, 'id', v_id);
+end $$;
+
+/** Lấy (tạo nếu chưa có) báo cáo ngày + nhóm + ca và khóa dòng để ghi */
+create or replace function private.report_for_update(d date, p_team text, p_shift text)
+returns private.reports language plpgsql set search_path = '' as $$
+declare r private.reports;
+begin
+  insert into private.reports (report_date, team, shift) values (d, p_team, p_shift) on conflict do nothing;
+  select * into r from private.reports where report_date = d and team = p_team and shift = p_shift for update;
+  return r;
+end $$;
+
+/** Gửi nhiều dòng công việc một lần (lưu tất cả hoặc không lưu dòng nào) */
+drop function if exists public.add_entries(text, text, text, jsonb);
+create or replace function public.add_entries(p_token text, p_date text, p_team text, p_entries jsonb, p_shift text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date);
+        v_shift text := private.check_shift(p_shift); n int; i int; v jsonb; vs jsonb := '[]'::jsonb; r private.reports; v_id bigint; ids jsonb := '[]'::jsonb;
+begin
+  perform private.check_team(p_team);
+  if p_entries is null or jsonb_typeof(p_entries) <> 'array' then perform private.err(400, 'Dữ liệu không hợp lệ.'); end if;
+  n := jsonb_array_length(p_entries);
+  if n = 0 then perform private.err(400, 'Chưa có công việc nào để gửi.'); end if;
+  if n > 30 then perform private.err(400, 'Mỗi lần gửi tối đa 30 công việc.'); end if;
+  -- kiểm tra toàn bộ trước, báo rõ công việc thứ mấy bị lỗi
+  for i in 0 .. n - 1 loop
+    begin
+      v := private.entry_input(p_entries -> i, false);
+      perform private.check_time_order(v);
+      v := jsonb_set(v, '{coworker_ids}', private.without_owner(v -> 'coworker_ids', u.id));
+    exception when others then
+      raise exception using errcode = sqlstate, message = 'Công việc ' || (i + 1) || ': ' || sqlerrm;
+    end;
+    vs := vs || jsonb_build_array(v);
+  end loop;
+  r := private.report_for_update(d, p_team, v_shift);
+  if r.status = 'approved' and not private.can_manage(u, p_team) then
+    perform private.err(403, 'Báo cáo ngày này của nhóm (' || v_shift || ') đã được phê duyệt, không thể thêm dòng mới.');
+  end if;
+  for v in select value from jsonb_array_elements(vs) loop
+    insert into private.entries (report_id, user_id, machine, description, start_at, end_at, completion, note, coworker_ids)
+    values (r.id, u.id, v ->> 'machine', v ->> 'description', v ->> 'start_at', v ->> 'end_at',
+            (v ->> 'completion')::int, v ->> 'note', private.jsonb_ids(v -> 'coworker_ids'))
+    returning id into v_id;
+    perform private.log(r.id, v_id, u.id, 'create', r.status = 'approved', null, v);
+    ids := ids || to_jsonb(v_id);
+  end loop;
+  return jsonb_build_object('ok', true, 'ids', ids, 'count', n);
 end $$;
 
 /** Khóa dòng + báo cáo, kiểm tra quyền sửa/xóa. Trả về báo cáo chứa dòng đó */
@@ -688,8 +763,8 @@ end $$;
 
 create or replace function public.update_entry(p_token text, p_id bigint, p_entry jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
-declare u private.users := private.auth_user(p_token); r private.reports; e private.entries;
-        v_old jsonb; v_new jsonb; v_old_diff jsonb; v_new_diff jsonb;
+declare u private.users := private.auth_user(p_token); r private.reports; e private.entries; t private.reports;
+        v_old jsonb; v_new jsonb; v_old_diff jsonb; v_new_diff jsonb; v_shift text;
 begin
   r := private.editable_entry(u, p_id);
   select * into e from private.entries where id = p_id;
@@ -699,13 +774,33 @@ begin
   perform private.check_time_order(v_new);
   select jsonb_object_agg(k, v_old -> k), jsonb_object_agg(k, v_new -> k) into v_old_diff, v_new_diff
     from jsonb_object_keys(v_new) k where v_new -> k is distinct from v_old -> k;
+
+  -- Đổi ca: chuyển dòng sang báo cáo của ca mới (cùng ngày, cùng nhóm)
+  t := r;
+  if p_entry ? 'shift' then
+    v_shift := private.check_shift(p_entry ->> 'shift');
+    if v_shift <> r.shift then
+      t := private.report_for_update(r.report_date, r.team, v_shift);
+      if t.status = 'approved' and not private.can_manage(u, t.team) then
+        perform private.err(403, 'Báo cáo ' || v_shift || ' của nhóm đã được phê duyệt, không thể chuyển dòng sang ca này.');
+      end if;
+      v_old_diff := coalesce(v_old_diff, '{}'::jsonb) || jsonb_build_object('shift', r.shift);
+      v_new_diff := coalesce(v_new_diff, '{}'::jsonb) || jsonb_build_object('shift', v_shift);
+    end if;
+  end if;
+
   if v_new_diff is null then return jsonb_build_object('ok', true); end if;
   update private.entries
-     set machine = v_new ->> 'machine', description = v_new ->> 'description', start_at = v_new ->> 'start_at',
+     set report_id = t.id,
+         machine = v_new ->> 'machine', description = v_new ->> 'description', start_at = v_new ->> 'start_at',
          end_at = v_new ->> 'end_at', completion = (v_new ->> 'completion')::int, note = v_new ->> 'note',
          coworker_ids = private.jsonb_ids(v_new -> 'coworker_ids'), updated_at = now()
    where id = p_id;
-  perform private.log(r.id, p_id, u.id, 'update', r.status = 'approved', v_old_diff, v_new_diff);
+  perform private.log(t.id, p_id, u.id, 'update', t.status = 'approved' or r.status = 'approved', v_old_diff, v_new_diff);
+  if t.id <> r.id then
+    -- ghi cả vào lịch sử báo cáo ca cũ để biết dòng đã chuyển đi đâu
+    perform private.log(r.id, p_id, u.id, 'update', r.status = 'approved', v_old_diff, v_new_diff);
+  end if;
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -781,24 +876,25 @@ returns jsonb language sql stable set search_path = '' as $$
                'manager_teams', to_jsonb(x.manager_teams), 'created_at', private.vn(x.created_at)) order by x.id)
         from private.users x), '[]'::jsonb),
     'reports', coalesce((
-      select jsonb_agg(jsonb_build_object('id', r.id, 'date', r.report_date, 'team', r.team, 'status', r.status,
+      select jsonb_agg(jsonb_build_object('id', r.id, 'date', r.report_date, 'team', r.team, 'shift', r.shift, 'status', r.status,
                'approved_by', ap.full_name, 'approved_at', private.vn(r.approved_at),
                'entries', (select count(*) from private.entries e where e.report_id = r.id))
-             order by r.report_date, array_position(private.teams(), r.team))
+             order by r.report_date, array_position(private.teams(), r.team), array_position(private.shifts(), r.shift))
         from private.reports r left join private.users ap on ap.id = r.approved_by
        where p_before is null or r.report_date < p_before), '[]'::jsonb),
     'entries', coalesce((
-      select jsonb_agg(jsonb_build_object('id', e.id, 'date', r.report_date, 'team', r.team, 'report_status', r.status,
+      select jsonb_agg(jsonb_build_object('id', e.id, 'date', r.report_date, 'team', r.team, 'shift', r.shift, 'report_status', r.status,
                'user_name', ow.full_name, 'coworker_names', private.user_names(e.coworker_ids),
                'machine', e.machine, 'description', e.description, 'start_at', e.start_at, 'end_at', e.end_at,
                'completion', e.completion, 'note', e.note,
                'created_at', private.vn(e.created_at), 'updated_at', private.vn(e.updated_at))
-             order by r.report_date, array_position(private.teams(), r.team), coalesce(e.start_at, '9999'), e.id)
+             order by r.report_date, array_position(private.teams(), r.team), array_position(private.shifts(), r.shift),
+                      coalesce(e.start_at, '9999'), e.id)
         from private.entries e join private.reports r on r.id = e.report_id join private.users ow on ow.id = e.user_id
        where p_before is null or r.report_date < p_before), '[]'::jsonb),
     'audit_log', coalesce((
       select jsonb_agg(jsonb_build_object('id', a.id, 'created_at', private.vn(a.created_at), 'date', r.report_date,
-               'team', r.team, 'user_name', au.full_name, 'action', a.action, 'after_approval', a.after_approval,
+               'team', r.team, 'shift', r.shift, 'user_name', au.full_name, 'action', a.action, 'after_approval', a.after_approval,
                'entry_id', a.entry_id, 'old_value', a.old_value, 'new_value', a.new_value) order by a.id)
         from private.audit_log a
         left join private.reports r on r.id = a.report_id
@@ -901,9 +997,19 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date);
 begin
   perform private.require_manager(u);
+  -- mỗi nhóm: các ca có dữ liệu; nhóm chưa có gì thì hiện 1 báo cáo trống ca Hành chính
   return jsonb_build_object('date', d, 'reports', coalesce((
-    select jsonb_agg(private.report_payload(u, d, t) order by array_position(private.teams(), t))
-      from unnest(private.viewable_teams(u)) t), '[]'::jsonb));
+    select jsonb_agg(private.report_payload(u, d, x.team, x.shift)
+                     order by array_position(private.teams(), x.team), array_position(private.shifts(), x.shift))
+      from (
+        select t as team, s as shift
+          from unnest(private.viewable_teams(u)) t cross join unnest(private.shifts()) s
+         where exists (select 1 from private.reports r where r.report_date = d and r.team = t and r.shift = s
+                         and (r.status = 'approved' or exists (select 1 from private.entries e where e.report_id = r.id)))
+            or (s = 'Hành chính' and not exists (
+                  select 1 from private.reports r where r.report_date = d and r.team = t
+                     and (r.status = 'approved' or exists (select 1 from private.entries e where e.report_id = r.id))))
+      ) x), '[]'::jsonb));
 end $$;
 
 create or replace function public.reports_month(p_token text, p_month text)
@@ -915,18 +1021,23 @@ begin
   v_start := (p_month || '-01')::date;
   return jsonb_build_object('month', p_month, 'days', coalesce((
     select jsonb_object_agg(day, teams) from (
-      select to_char(r.report_date, 'YYYY-MM-DD') as day,
-             jsonb_object_agg(r.team, jsonb_build_object('status', r.status, 'count', c.cnt)) as teams
-        from private.reports r
-        join lateral (select count(*) as cnt from private.entries e where e.report_id = r.id) c on c.cnt > 0
-       where r.report_date >= v_start and r.report_date < (v_start + interval '1 month')
-         and r.team = any (private.viewable_teams(u))
-       group by r.report_date) s), '{}'::jsonb));
+      select day, jsonb_object_agg(team, jsonb_build_object('status', status, 'count', cnt)) as teams from (
+        -- gộp các ca của 1 nhóm: "approved" khi mọi ca có dữ liệu đều đã duyệt
+        select to_char(r.report_date, 'YYYY-MM-DD') as day, r.team,
+               case when bool_and(r.status = 'approved') then 'approved' else 'draft' end as status, sum(c.cnt) as cnt
+          from private.reports r
+          join lateral (select count(*) as cnt from private.entries e where e.report_id = r.id) c on c.cnt > 0
+         where r.report_date >= v_start and r.report_date < (v_start + interval '1 month')
+           and r.team = any (private.viewable_teams(u))
+         group by r.report_date, r.team) t
+       group by day) s), '{}'::jsonb));
 end $$;
 
-create or replace function public.report_history(p_token text, p_date text, p_team text)
+drop function if exists public.report_history(text, text, text);
+create or replace function public.report_history(p_token text, p_date text, p_team text, p_shift text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date);
+        v_shift text := private.check_shift(p_shift);
 begin
   perform private.require_manager(u);
   perform private.check_team(p_team);
@@ -940,48 +1051,54 @@ begin
       from private.audit_log a
       join private.reports r on r.id = a.report_id
       join private.users au on au.id = a.user_id
-     where r.report_date = d and r.team = p_team), '[]'::jsonb));
+     where r.report_date = d and r.team = p_team and r.shift = v_shift), '[]'::jsonb));
 end $$;
 
-create or replace function public.approve_report(p_token text, p_date text, p_team text)
+drop function if exists public.approve_report(text, text, text);
+create or replace function public.approve_report(p_token text, p_date text, p_team text, p_shift text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date); r private.reports;
+        v_shift text := private.check_shift(p_shift);
 begin
   perform private.require_manager(u);
   perform private.check_team(p_team);
   perform private.require_team(u, p_team);
-  select * into r from private.reports where report_date = d and team = p_team for update;
+  select * into r from private.reports where report_date = d and team = p_team and shift = v_shift for update;
   if not found or not exists (select 1 from private.entries where report_id = r.id) then
     perform private.err(400, 'Báo cáo chưa có dòng công việc nào.');
   end if;
   if r.status = 'approved' then perform private.err(400, 'Báo cáo đã được phê duyệt trước đó.'); end if;
   update private.reports set status = 'approved', approved_by = u.id, approved_at = now() where id = r.id;
   perform private.log(r.id, null, u.id, 'approve', false, null, null);
-  return jsonb_build_object('ok', true, 'message', 'Đã phê duyệt báo cáo nhóm ' || p_team || '.');
+  return jsonb_build_object('ok', true, 'message', 'Đã phê duyệt báo cáo nhóm ' || p_team || ' (' || v_shift || ').');
 end $$;
 
-create or replace function public.unapprove_report(p_token text, p_date text, p_team text)
+drop function if exists public.unapprove_report(text, text, text);
+create or replace function public.unapprove_report(p_token text, p_date text, p_team text, p_shift text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date); r private.reports;
+        v_shift text := private.check_shift(p_shift);
 begin
   perform private.require_admin(u);
   perform private.check_team(p_team);
-  select * into r from private.reports where report_date = d and team = p_team for update;
+  select * into r from private.reports where report_date = d and team = p_team and shift = v_shift for update;
   if not found or r.status <> 'approved' then perform private.err(400, 'Báo cáo chưa được phê duyệt.'); end if;
   update private.reports set status = 'draft', approved_by = null, approved_at = null where id = r.id;
   perform private.log(r.id, null, u.id, 'unapprove', true, null, null);
-  return jsonb_build_object('ok', true, 'message', 'Đã hủy phê duyệt, nhân viên nhóm ' || p_team || ' có thể sửa lại.');
+  return jsonb_build_object('ok', true, 'message', 'Đã hủy phê duyệt, nhân viên nhóm ' || p_team || ' (' || v_shift || ') có thể sửa lại.');
 end $$;
 
 /** Dữ liệu để xuất Excel – chỉ trả về khi báo cáo đầy đủ */
-create or replace function public.report_export(p_token text, p_date text, p_team text)
+drop function if exists public.report_export(text, text, text);
+create or replace function public.report_export(p_token text, p_date text, p_team text, p_shift text default null)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date); v jsonb;
+        v_shift text := private.check_shift(p_shift);
 begin
   perform private.require_manager(u);
   perform private.check_team(p_team);
   perform private.require_team(u, p_team);
-  v := private.report_payload(u, d, p_team);
+  v := private.report_payload(u, d, p_team, v_shift);
   if jsonb_array_length(v -> 'entries') = 0 then
     perform private.err(400, 'Báo cáo chưa có dòng công việc nào để xuất.');
   end if;
@@ -998,7 +1115,7 @@ do $$
 declare f record;
         api text[] := array['register', 'login', 'logout', 'me', 'change_password', 'update_profile',
                             'admin_list_users', 'admin_set_status', 'admin_update_user', 'admin_reset_password',
-                            'my_entries', 'add_entry', 'update_entry', 'delete_entry',
+                            'my_entries', 'add_entry', 'add_entries', 'update_entry', 'delete_entry',
                             'reports_of_day', 'reports_month', 'report_history', 'approve_report',
                             'unapprove_report', 'report_export', 'list_coworkers', 'admin_storage', 'admin_backup',
                             'admin_purge_preview', 'admin_purge_backup', 'admin_purge'];

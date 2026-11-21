@@ -96,7 +96,7 @@ Sau khi phê duyệt, nhân viên không thể sửa/xóa/thêm dòng (máy ch�
 
 | Ô mẫu | Dữ liệu |
 |---|---|
-| B5 | `Bộ phận: <Nhóm>   Ca: ……   Ngày dd Tháng mm Năm yyyy` |
+| B5 | `Bộ phận: <Nhóm>   Ca: <Hành chính / 1 / 2 / 3>   Ngày dd Tháng mm Năm yyyy` |
 | B / C | Tên máy / Diễn giải công việc |
 | D / E | Giờ bắt đầu / kết thúc (`HH:mm`, thêm `(dd/mm)` nếu sang ngày khác) |
 | F (Tình trạng) | Tình trạng máy / Ghi chú |
@@ -104,7 +104,7 @@ Sau khi phê duyệt, nhân viên không thể sửa/xóa/thêm dòng (máy ch�
 | H (Ghi chú) | `OK` hoặc phần trăm (số, định dạng `0%`) |
 | F31 | Họ tên người phê duyệt |
 
-Khi nhập: **Diễn giải công việc (tên công việc)** bắt buộc; Tên máy và Ghi chú không bắt buộc. Chỉ xuất được khi mọi dòng có đủ diễn giải, giờ bắt đầu, giờ kết thúc, trạng thái — máy chủ kiểm tra và báo rõ dòng nào thiếu trường nào. Báo cáo > 20 dòng tự chèn thêm dòng, khối chữ ký dời xuống. Tên file `BaoCao_<Dien|CoKhi|PM>_<dd-mm-yyyy>.xlsx`.
+Khi nhập: **Diễn giải công việc (tên công việc)** bắt buộc; Tên máy và Ghi chú không bắt buộc. Nhân viên bấm **+ Thêm công việc** để nhập nhiều việc, rồi bấm **Gửi báo cáo** một lần (lưu tất cả hoặc không lưu việc nào). Giờ gõ tay `07:30` / `0730`, ngày tự theo ngày báo cáo; giờ kết thúc nhỏ hơn giờ bắt đầu được tính sang ngày hôm sau. Chỉ xuất được khi mọi dòng có đủ diễn giải, giờ bắt đầu, giờ kết thúc, trạng thái — máy chủ kiểm tra và báo rõ dòng nào thiếu trường nào. Báo cáo > 20 dòng tự chèn thêm dòng, khối chữ ký dời xuống. Mỗi **ngày + nhóm + ca** là 1 báo cáo riêng (duyệt riêng, xuất file riêng); ca mặc định là Hành chính, nhân viên đi ca 1/2/3 thì chọn ca khi nhập. Tên file `BaoCao_<Dien|CoKhi|PM>_<HanhChinh|Ca1|Ca2|Ca3>_<dd-mm-yyyy>.xlsx`.
 
 ---
 

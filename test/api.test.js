@@ -242,7 +242,8 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
 
   ex = await ql.call('report_export', body);
   assert.equal(ex.status, 200, JSON.stringify(ex.body));
-  assert.equal(ExcelExport.exportFileName(ex.body.team, ex.body.date), 'BaoCao_Dien_10-11-2026.xlsx');
+  assert.equal(ex.body.shift, 'Hành chính', 'không chọn ca → ca Hành chính');
+  assert.equal(ExcelExport.exportFileName(ex.body.team, ex.body.date, ex.body.shift), 'BaoCao_Dien_HanhChinh_10-11-2026.xlsx');
 
   const template = fs.readFileSync(path.join(__dirname, '..', 'web', 'mau_bao_cao.xlsx'));
   const built = await ExcelExport.buildWorkbook(ExcelJS, template, ex.body);
@@ -251,7 +252,7 @@ test('xuất Excel: chặn khi thiếu dữ liệu, xuất đúng mẫu khi đ�
   const ws = wb.worksheets[0];
   assert.equal(ws.name, 'sua chua hang ngay');
   assert.equal(ws.getCell('B4').value, 'BÁO CÁO SỬA CHỮA HÀNG NGÀY');
-  assert.match(ws.getCell('B5').value, /Bộ phận: Điện.*Ngày 10\s+Tháng 11\s+Năm 2026/);
+  assert.match(ws.getCell('B5').value, /Bộ phận: Điện\s+Ca: Hành chính\s+Ngày 10\s+Tháng 11\s+Năm 2026/);
   assert.equal(ws.getCell('B6').value, 'Tên máy');
   assert.equal(ws.getCell('B7').value, 'Tủ điện MCC1');
   assert.equal(ws.getCell('C7').value, 'Thay contactor');
@@ -442,3 +443,91 @@ test('Admin: xóa dữ liệu cũ (bắt buộc sao lưu, gõ XOA, không xóa 1
   assert.equal(st.body.last_purge.reports, 1);
   assert.equal(st.body.last_purge.before, before);
 });
+
+test('gửi nhiều công việc một lần: lưu tất cả hoặc không lưu gì, báo đúng công việc lỗi', async () => {
+  const D = '2026-11-21';
+  const nv = await makeUser('nv.nhieuviec', 'PM');
+  const ql = await makeUser('ql.nhieuviec', 'PM', 'manager', { teams: ['PM'] });
+  const send = (c, list) => c.call('add_entries', { p_date: D, p_team: 'PM', p_entries: list });
+
+  // công việc thứ 2 thiếu diễn giải → báo "Công việc 2", không lưu công việc nào
+  let r = await send(nv, [entry(D, { description: 'Việc A' }), entry(D, { description: '' }), entry(D)]);
+  assert.equal(r.status, 400);
+  assert.match(r.body.message, /^Công việc 2: .*Diễn giải/);
+  assert.equal((await nv.call('my_entries', { p_date: D })).body.entries.length, 0);
+
+  assert.equal((await send(nv, [])).status, 400);
+  assert.equal((await send(nv, Array.from({ length: 31 }, () => entry(D)))).status, 400);
+
+  // 3 công việc, có 1 việc làm qua đêm, 1 việc không ghi tên máy
+  r = await send(nv, [
+    entry(D, { machine: 'Máy nén khí', description: 'Bảo dưỡng định kỳ', start_at: `${D}T08:00`, end_at: `${D}T10:00` }),
+    entry(D, { machine: '', description: 'Vệ sinh khu vực', start_at: `${D}T13:00`, end_at: `${D}T14:00` }),
+    entry(D, { description: 'Trực sửa máy ca đêm', start_at: `${D}T22:00`, end_at: '2026-11-22T02:00' }),
+  ]);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.count, 3);
+  const mine = (await nv.call('my_entries', { p_date: D })).body.entries;
+  assert.equal(mine.length, 3);
+  assert.deepEqual(mine.map((e) => e.description).sort(), ['Bảo dưỡng định kỳ', 'Trực sửa máy ca đêm', 'Vệ sinh khu vực']);
+
+  // tất cả nằm chung 1 báo cáo nhóm PM; lịch sử ghi 3 lần tạo
+  const hist = await ql.call('report_history', { p_date: D, p_team: 'PM' });
+  assert.equal(hist.body.items.filter((h) => h.action === 'create').length, 3);
+
+  // báo cáo đã duyệt → nhân viên không gửi thêm được
+  assert.equal((await ql.call('approve_report', { p_date: D, p_team: 'PM' })).status, 200);
+  assert.equal((await send(nv, [entry(D)])).status, 403);
+  assert.equal((await send(ql, [entry(D, { description: 'Quản lý bổ sung' })])).status, 200);
+});
+
+test('ca làm việc: mặc định Hành chính, mỗi ca 1 báo cáo + 1 file Excel riêng, duyệt riêng', async () => {
+  const D = '2026-11-23';
+  const nv = await makeUser('nv.ca', 'Điện');
+  const ql = await makeUser('ql.ca', 'Điện', 'manager', { teams: ['Điện'] });
+  const send = (shift, list) => nv.call('add_entries', { p_date: D, p_team: 'Điện', p_shift: shift, p_entries: list });
+
+  assert.equal((await send(undefined, [entry(D, { description: 'Việc hành chính' })])).status, 200);
+  assert.equal((await send('Ca 1', [entry(D, { description: 'Việc ca 1 A' }), entry(D, { description: 'Việc ca 1 B' })])).status, 200);
+  assert.equal((await send('Ca 3', [entry(D, { description: 'Việc ca 3', start_at: `${D}T22:00`, end_at: '2026-11-24T05:30' })])).status, 200);
+  assert.equal((await send('Ca 5', [entry(D)])).status, 400, 'ca không hợp lệ');
+
+  // trang quản lý: 3 báo cáo riêng của nhóm Điện
+  const day = await ql.call('reports_of_day', { p_date: D });
+  const dien = day.body.reports.filter((r) => r.team === 'Điện');
+  assert.deepEqual(dien.map((r) => [r.shift, r.entries.length]), [['Hành chính', 1], ['Ca 1', 2], ['Ca 3', 1]]);
+
+  // duyệt riêng Ca 1 → chỉ khóa Ca 1
+  assert.equal((await ql.call('approve_report', { p_date: D, p_team: 'Điện', p_shift: 'Ca 1' })).status, 200);
+  assert.equal((await send('Ca 1', [entry(D)])).status, 403);
+  assert.equal((await send('Hành chính', [entry(D, { description: 'Thêm việc HC' })])).status, 200);
+  const mine = (await nv.call('my_entries', { p_date: D })).body;
+  assert.equal(mine.report_statuses['Điện']['Ca 1'], 'approved');
+  assert.equal(mine.report_statuses['Điện']['Hành chính'], 'draft');
+  assert.ok(mine.entries.every((e) => SHIFTS_OK.includes(e.shift)));
+
+  // xuất Excel Ca 3: ô "Ca:" ghi 3, tên file có Ca3
+  const ex = await ql.call('report_export', { p_date: D, p_team: 'Điện', p_shift: 'Ca 3' });
+  assert.equal(ex.status, 200, JSON.stringify(ex.body));
+  assert.equal(ex.body.entries.length, 1);
+  assert.equal(ExcelExport.exportFileName(ex.body.team, ex.body.date, ex.body.shift), 'BaoCao_Dien_Ca3_23-11-2026.xlsx');
+  const template = fs.readFileSync(path.join(__dirname, '..', 'web', 'mau_bao_cao.xlsx'));
+  const built = await ExcelExport.buildWorkbook(ExcelJS, template, ex.body);
+  assert.match(built.worksheets[0].getCell('B5').value, /Ca: 3\s+Ngày 23/);
+
+  // đổi ca khi sửa: chuyển dòng HC sang Ca 2
+  const hcId = mine.entries.find((e) => e.description === 'Việc hành chính').id;
+  assert.equal((await nv.call('update_entry', { p_id: hcId, p_entry: { shift: 'Ca 2' } })).status, 200);
+  const ca2 = await ql.call('report_export', { p_date: D, p_team: 'Điện', p_shift: 'Ca 2' });
+  assert.deepEqual(ca2.body.entries.map((e) => e.description), ['Việc hành chính']);
+  // không chuyển được sang ca đã duyệt
+  assert.equal((await nv.call('update_entry', { p_id: hcId, p_entry: { shift: 'Ca 1' } })).status, 403);
+  const hist = await ql.call('report_history', { p_date: D, p_team: 'Điện', p_shift: 'Ca 2' });
+  assert.ok(hist.body.items.some((h) => h.action === 'update' && h.new_value.shift === 'Ca 2'));
+
+  // lịch tháng: gộp các ca, nhóm Điện chưa duyệt hết
+  const month = await ql.call('reports_month', { p_month: '2026-11' });
+  assert.equal(month.body.days[D]['Điện'].status, 'draft');
+  assert.equal(month.body.days[D]['Điện'].count, 5);
+});
+const SHIFTS_OK = ['Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'];
