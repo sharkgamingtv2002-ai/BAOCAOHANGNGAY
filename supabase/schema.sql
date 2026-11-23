@@ -908,8 +908,13 @@ declare u private.users := private.auth_user(p_token);
 begin
   perform private.require_admin(u);
   return jsonb_build_object(
-    'db_bytes', pg_catalog.pg_database_size(pg_catalog.current_database()),
-    'limit_bytes', 500 * 1024 * 1024,
+    -- Supabase tính hạn mức 500 MB (Free) = tổng mọi database trên máy chủ (postgres + template0 + template1),
+    -- đơn vị thập phân (1 MB = 1.000.000 byte) → khớp số "Database Size" ở trang Usage
+    'db_bytes', (select sum(pg_catalog.pg_database_size(d.oid))::bigint from pg_catalog.pg_database d),
+    'app_bytes', coalesce((select sum(pg_catalog.pg_total_relation_size(c.oid))::bigint
+                             from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+                            where n.nspname = 'private' and c.relkind = 'r'), 0),
+    'limit_bytes', 500 * 1000 * 1000,
     'users', (select count(*) from private.users),
     'reports', (select count(*) from private.reports),
     'entries', (select count(*) from private.entries),

@@ -356,7 +356,8 @@ test('Admin: xem dung lượng và sao lưu toàn bộ dữ liệu ra Excel', as
   const st = await admin.call('admin_storage');
   assert.equal(st.status, 200);
   assert.ok(st.body.db_bytes > 0);
-  assert.equal(st.body.limit_bytes, 500 * 1024 * 1024);
+  assert.equal(st.body.limit_bytes, 500 * 1000 * 1000, '500 MB theo cách tính của Supabase');
+  assert.ok(st.body.app_bytes > 0 && st.body.app_bytes < st.body.db_bytes);
   assert.ok(st.body.entries > 0 && st.body.users > 0);
 
   const bk = await admin.call('admin_backup');

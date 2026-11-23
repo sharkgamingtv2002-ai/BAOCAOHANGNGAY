@@ -931,9 +931,11 @@ async function renderAdmin() {
 }
 
 /* ----- Dung lượng & sao lưu ----- */
+/** Đơn vị thập phân giống Supabase (1 MB = 1.000.000 byte) */
 function fmtBytes(b) {
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
-  return `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  const n = (v, d) => v.toLocaleString('vi-VN', { minimumFractionDigits: d, maximumFractionDigits: d });
+  if (b < 1e6) return `${n(b / 1e3, 0)} KB`;
+  return `${n(b / 1e6, b < 1e8 ? 1 : 0)} MB`;
 }
 const fmtNum = (n) => Number(n || 0).toLocaleString('vi-VN');
 
@@ -955,7 +957,7 @@ async function loadStorage() {
       <div><h2>Dung lượng dữ liệu</h2><p class="muted small">Gói Free của Supabase cho phép tối đa 500 MB.</p></div>
       <button class="btn btn-accent" id="backup-btn">⬇ Sao lưu ra Excel</button>
     </div>
-    <div class="storage-figs"><strong>${fmtBytes(s.db_bytes)} / 500 MB</strong><span class="muted">đã dùng ${pct.toFixed(1)}%</span></div>
+    <div class="storage-figs"><strong>${fmtBytes(s.db_bytes)} / 500 MB</strong><span class="muted">đã dùng ${pct.toLocaleString('vi-VN', { maximumFractionDigits: 1 })}%</span></div>
     <div class="meter meter-${level}" role="meter" aria-label="Dung lượng đã dùng" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct.toFixed(1)}"><span></span></div>
     <div class="storage-stats">
       <div><b>${fmtNum(s.entries)}</b><span>dòng công việc</span></div>
@@ -963,6 +965,7 @@ async function loadStorage() {
       <div><b>${fmtNum(s.users)}</b><span>tài khoản</span></div>
       <div><b>${fmtNum(s.audit_log)}</b><span>lịch sử sửa</span></div>
     </div>
+    <p class="small muted">Tính giống trang Usage của Supabase. Trong đó dữ liệu báo cáo chiếm ${fmtBytes(s.app_bytes || 0)}, phần còn lại là phần nền có sẵn của Supabase.</p>
     <p class="small ${level === 'ok' ? 'muted' : `text-${level}`}">${s.first_date ? `Dữ liệu từ ${dmy(s.first_date)} đến ${dmy(s.last_date)}. ` : ''}${advice}</p>
     ${purgeSectionHTML(s, level)}`;
   $('.meter span', box).style.width = `${Math.max(pct, 0.5)}%`;
