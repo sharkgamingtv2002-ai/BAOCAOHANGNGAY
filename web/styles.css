@@ -405,3 +405,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
   background: var(--ok-soft); color: var(--ok); margin-left: 6px; vertical-align: middle; }
 .shift-tag.sh-ca { background: var(--warn-soft); color: var(--warn); }
 .field-shift { margin-top: 12px; }
+
+/* Nút 🎤 nói thành chữ */
+.voice-wrap { position: relative; }
+.voice-wrap textarea { width: 100%; padding-right: 52px; }
+.mic-btn { position: absolute; right: 6px; top: 6px; width: 40px; height: 40px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 18px; line-height: 1; cursor: pointer; }
+.mic-btn:hover { border-color: var(--brand); }
+.mic-btn.rec { background: var(--danger-soft); border-color: var(--danger); animation: mic-pulse 1.2s ease-in-out infinite; }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(185, 28, 28, .35); } 50% { box-shadow: 0 0 0 8px rgba(185, 28, 28, 0); } }
+@media (prefers-reduced-motion: reduce) { .mic-btn.rec { animation: none; } }

@@ -248,7 +248,10 @@ function entryFormHTML(e, date) {
   return `
     <div class="stack" data-base="${esc(base)}">
       <label class="field"><span>Diễn giải công việc (tên công việc) <span class="req">*</span></span>
-        <textarea name="description" rows="3" maxlength="4000" required placeholder="VD: Thay vòng bi motor quạt hút, vệ sinh tủ điện...">${esc(e?.description)}</textarea></label>
+        <div class="voice-wrap">
+          <textarea name="description" rows="3" maxlength="4000" required placeholder="VD: Thay vòng bi motor quạt hút, vệ sinh tủ điện...">${esc(e?.description)}</textarea>
+          ${micBtnHTML('description')}
+        </div></label>
       ${e ? `<label class="field"><span>Ca làm việc</span>
         <select name="shift">${SHIFTS.map((x) => `<option ${x === (e.shift || DEFAULT_SHIFT) ? 'selected' : ''}>${x}</option>`).join('')}</select></label>` : ''}
       <label class="field"><span>Tên máy</span>
@@ -275,7 +278,10 @@ function entryFormHTML(e, date) {
         </div>
       </div>
       <label class="field"><span>Tình trạng máy / Ghi chú <span class="muted small">(không bắt buộc)</span></span>
-        <textarea name="note" rows="2" maxlength="4000" placeholder="VD: Máy hoạt động bình thường">${esc(e?.note)}</textarea></label>
+        <div class="voice-wrap">
+          <textarea name="note" rows="2" maxlength="4000" placeholder="VD: Máy hoạt động bình thường">${esc(e?.note)}</textarea>
+          ${micBtnHTML('note')}
+        </div></label>
       <div class="form-error" data-err hidden></div>
     </div>`;
 }
@@ -303,6 +309,76 @@ function bindEntryForm(root) {
   });
   updateTimeHint(root);
   bindCoworkers(root);
+  $$('[data-mic]', root).forEach((b) => b.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    toggleVoice(b, $(`[name=${b.dataset.mic}]`, root));
+  }));
+}
+
+/* ---------- Nói thành chữ (Web Speech API của trình duyệt, tiếng Việt) ---------- */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voice = null; // { rec, btn, field }
+
+function micBtnHTML(field) {
+  return `<button type="button" class="mic-btn" data-mic="${field}" title="Bấm để nói, bấm lần nữa để dừng" aria-label="Nói thay vì gõ" aria-pressed="false">🎤</button>`;
+}
+
+function stopVoice() {
+  if (voice) { try { voice.rec.stop(); } catch { /* đã dừng */ } }
+}
+
+function toggleVoice(btn, field) {
+  if (voice && voice.btn === btn) { stopVoice(); return; }
+  stopVoice();
+  if (!SpeechRec) {
+    toast('Trình duyệt này chưa hỗ trợ nói thành chữ. Hãy dùng Chrome / Safari, hoặc bấm micro trên bàn phím điện thoại.', true);
+    return;
+  }
+  const rec = new SpeechRec();
+  rec.lang = 'vi-VN';
+  rec.continuous = true;
+  rec.interimResults = true;
+  const start = field.value.replace(/\s+$/, '');
+  const max = Number(field.getAttribute('maxlength')) || 4000;
+  let finalText = '';
+  const show = (interim) => {
+    let said = (finalText + interim).replace(/\s+/g, ' ').trim();
+    if (!said) return;
+    if (!start || /[.!?]$/.test(start)) said = said.charAt(0).toUpperCase() + said.slice(1);
+    field.value = (start ? start + ' ' : '') + said;
+    if (field.value.length > max) field.value = field.value.slice(0, max);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  rec.onresult = (ev) => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) finalText += t + ' ';
+      else interim += t;
+    }
+    show(interim);
+  };
+  rec.onerror = (ev) => {
+    const msg = {
+      'not-allowed': 'Chưa cho phép dùng micro. Bấm biểu tượng ổ khóa cạnh địa chỉ web → cho phép Micro.',
+      'service-not-allowed': 'Trình duyệt này không cho dùng nói thành chữ. Hãy dùng Chrome / Safari.',
+      'no-speech': 'Không nghe thấy tiếng nói, bấm 🎤 và nói lại.',
+      'audio-capture': 'Không tìm thấy micro trên thiết bị.',
+      network: 'Nói thành chữ cần có mạng internet.',
+    }[ev.error];
+    if (msg) toast(msg, true);
+  };
+  rec.onend = () => {
+    show('');
+    btn.classList.remove('rec');
+    btn.setAttribute('aria-pressed', 'false');
+    if (voice && voice.rec === rec) voice = null;
+  };
+  try { rec.start(); } catch { toast('Không bật được micro, thử lại.', true); return; }
+  voice = { rec, btn, field };
+  btn.classList.add('rec');
+  btn.setAttribute('aria-pressed', 'true');
+  toast('Đang nghe… nói xong bấm 🎤 lần nữa để dừng.');
 }
 
 /** Dòng nhắc dưới ô giờ: ngày theo báo cáo, báo khi giờ kết thúc sang hôm sau */
