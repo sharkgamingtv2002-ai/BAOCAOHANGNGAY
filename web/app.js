@@ -870,7 +870,10 @@ async function loadReports() {
         <tbody>${rep.entries.map((e, i) => {
           const miss = missByEntry[e.id] || [];
           const m = (label, v) => (miss.includes(label) ? '<span class="miss">thiếu</span>' : v);
-          return `<tr class="${miss.length ? 'row-missing' : ''}" data-id="${e.id}">
+          // dòng tiêu đề đầu mỗi cụm: các việc của cùng 1 người gửi đứng liền nhau
+          const head = i === 0 || rep.entries[i - 1].user_id !== e.user_id
+            ? `<tr class="grp-row"><td colspan="9" class="no-label">👤 ${esc(e.user_name)} · ${rep.entries.filter((x) => x.user_id === e.user_id).length} công việc</td></tr>` : '';
+          return `${head}<tr class="${miss.length ? 'row-missing' : ''}" data-id="${e.id}">
             <td data-label="#" class="num">${i + 1}</td>
             <td data-label="Tên máy" class="w-machine"><strong>${esc(e.machine)}</strong></td>
             <td data-label="Diễn giải" class="w-desc pre">${m('Diễn giải công việc', esc(e.description))}</td>

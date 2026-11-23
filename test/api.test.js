@@ -532,3 +532,21 @@ test('ca làm việc: mặc định Hành chính, mỗi ca 1 báo cáo + 1 file 
   assert.equal(month.body.days[D]['Điện'].count, 5);
 });
 const SHIFTS_OK = ['Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'];
+
+test('báo cáo gom theo người gửi: việc của mỗi người thành 1 cụm, không trộn theo giờ', async () => {
+  const D = '2026-11-24';
+  const a = await makeUser('nv.cumA', 'PM');
+  const b = await makeUser('nv.cumB', 'PM');
+  const ql = await makeUser('ql.cum', 'PM', 'manager', { teams: ['PM'] });
+  const send = (u, list) => u.call('add_entries', { p_date: D, p_team: 'PM', p_entries: list });
+  // A gửi trước (8h, 14h), B gửi sau (10h, thiếu giờ kết thúc), A gửi thêm 7h
+  assert.equal((await send(a, [entry(D, { description: 'A1', start_at: `${D}T08:00` }), entry(D, { description: 'A2', start_at: `${D}T14:00`, end_at: `${D}T15:00` })])).status, 200);
+  assert.equal((await send(b, [entry(D, { description: 'B1', start_at: `${D}T10:00`, end_at: null })])).status, 200);
+  assert.equal((await send(a, [entry(D, { description: 'A0', start_at: `${D}T07:00`, end_at: `${D}T07:30` })])).status, 200);
+
+  const day = await ql.call('reports_of_day', { p_date: D });
+  const rep = day.body.reports.find((r) => r.team === 'PM');
+  assert.deepEqual(rep.entries.map((e) => e.description), ['A0', 'A1', 'A2', 'B1'], 'cụm A (theo giờ) rồi tới cụm B');
+  // số dòng trong cảnh báo thiếu khớp vị trí trong bảng / file Excel
+  assert.deepEqual(rep.missing.map((m) => [m.row, m.user_name]), [[4, rep.entries[3].user_name]]);
+});

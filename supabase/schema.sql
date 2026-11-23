@@ -405,14 +405,16 @@ returns jsonb language sql stable set search_path = '' as $$
                                                'machine', machine, 'fields', to_jsonb(fields)) order by rn), '[]'::jsonb)
   from (
     select e.id, e.machine, u.full_name as user_name,
-           row_number() over (order by coalesce(e.start_at, '9999'), e.id) as rn,
+           -- cùng thứ tự với báo cáo: gom theo người gửi (ai gửi trước đứng trước), trong cụm theo giờ bắt đầu
+           row_number() over (order by e.grp, coalesce(e.start_at, '9999'), e.id) as rn,
            array_remove(array[
              case when btrim(e.description) = '' then 'Diễn giải công việc' end,
              case when e.start_at is null then 'Thời gian bắt đầu' end,
              case when e.end_at is null then 'Thời gian kết thúc' end,
              case when e.completion is null then 'Trạng thái' end], null) as fields
-      from private.entries e join private.users u on u.id = e.user_id
-     where e.report_id = p_report_id
+      from (select y.*, min(y.id) over (partition by y.user_id) as grp
+              from private.entries y where y.report_id = p_report_id) e
+      join private.users u on u.id = e.user_id
   ) x
   where cardinality(fields) > 0
 $$;
@@ -436,10 +438,12 @@ begin
            'completion', e.completion, 'note', e.note, 'updated_at', private.vn(e.updated_at),
            'coworker_ids', to_jsonb(e.coworker_ids), 'coworker_names', private.user_names(e.coworker_ids),
            'can_edit', v_manage or (e.user_id = u.id and r.status = 'draft'))
-         order by coalesce(e.start_at, '9999'), e.id), '[]'::jsonb)
+         -- gom dòng theo người gửi thành từng cụm (ai gửi trước đứng trước), trong cụm theo giờ bắt đầu
+         order by e.grp, coalesce(e.start_at, '9999'), e.id), '[]'::jsonb)
     into v_entries
-    from private.entries e join private.users eu on eu.id = e.user_id
-   where e.report_id = r.id;
+    from (select x.*, min(x.id) over (partition by x.user_id) as grp
+            from private.entries x where x.report_id = r.id) e
+    join private.users eu on eu.id = e.user_id;
   return jsonb_build_object('date', p_date, 'team', p_team, 'shift', p_shift, 'status', r.status,
                             'approved_by_name', r.approved_by_name, 'approved_at', private.vn(r.approved_at),
                             'entries', v_entries, 'missing', private.missing(r.id));

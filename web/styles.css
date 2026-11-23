@@ -414,3 +414,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .mic-btn.rec { background: var(--danger-soft); border-color: var(--danger); animation: mic-pulse 1.2s ease-in-out infinite; }
 @keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(185, 28, 28, .35); } 50% { box-shadow: 0 0 0 8px rgba(185, 28, 28, 0); } }
 @media (prefers-reduced-motion: reduce) { .mic-btn.rec { animation: none; } }
+
+/* Tiêu đề cụm theo người gửi trong bảng báo cáo */
+.tbl tr.grp-row td { background: var(--brand-soft); color: var(--brand); font-weight: 700; padding: 8px 12px; border-top: 2px solid var(--brand); }
+@media (max-width: 720px) { .tbl tr.grp-row { border: 0; background: none; box-shadow: none; padding: 0; margin: 14px 0 6px; } .tbl tr.grp-row td { border-radius: 8px; } }
