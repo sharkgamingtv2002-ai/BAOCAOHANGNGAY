@@ -197,7 +197,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
   min-height: 100vh; display: grid; grid-template-columns: 1.1fr 1fr;
 }
 .auth-hero { position: relative; overflow: hidden; background: #0f2a17; }
-.auth-hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.auth-hero img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; }
 .auth-hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10,25,12,.1) 30%, rgba(10,25,12,.85)); }
 .auth-hero .caption { position: absolute; z-index: 1; left: 40px; right: 40px; bottom: 40px; color: #fff; }
 .auth-hero .caption h1 { font-size: 2rem; }

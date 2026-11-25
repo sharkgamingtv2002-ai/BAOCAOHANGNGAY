@@ -498,7 +498,7 @@ function authShell(inner) {
   return `
     <div class="auth">
       <div class="auth-hero">
-        <img src="img/hero.webp" alt="Khu silo nhà máy lúc hoàng hôn">
+        <img src="img/xuong-co-khi.webp" alt="Xưởng cơ khí – An toàn trên hết">
         <div class="caption">
           <h1>Báo cáo công việc hàng ngày</h1>
           <p>Phòng Kỹ thuật · Nhập, tổng hợp và phê duyệt báo cáo sửa chữa của nhóm Điện, Cơ Khí và PM.</p>
