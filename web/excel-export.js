@@ -20,7 +20,7 @@
     lastCol: 8,
   };
 
-  var TEAM_SLUG = { 'Điện': 'Dien', 'Cơ Khí': 'CoKhi', PM: 'PM' };
+  var TEAM_SLUG = { 'Điện': 'Dien', 'Cơ Khí': 'CoKhi', PM: 'PM', 'Trực ca': 'TrucCa' };
 
   var SHIFT_SLUG = { 'Hành chính': 'HanhChinh', 'Ca 1': 'Ca1', 'Ca 2': 'Ca2', 'Ca 3': 'Ca3' };
 

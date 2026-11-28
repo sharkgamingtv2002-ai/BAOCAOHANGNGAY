@@ -23,6 +23,7 @@
   --team-dien: #ca8a04;
   --team-cokhi: #2563eb;
   --team-pm: #9333ea;
+  --team-trucca: #0d9488;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -191,6 +192,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .t-dien { color: var(--team-dien); }
 .t-cokhi { color: var(--team-cokhi); }
 .t-pm { color: var(--team-pm); }
+.t-trucca { color: var(--team-trucca); }
 
 /* ---------- Đăng nhập ---------- */
 .auth {
@@ -223,6 +225,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .entry.e-dien { border-left-color: var(--team-dien); }
 .entry.e-cokhi { border-left-color: var(--team-cokhi); }
 .entry.e-pm { border-left-color: var(--team-pm); }
+.entry.e-trucca { border-left-color: var(--team-trucca); }
 .entry-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .entry-machine { font-weight: 700; }
 .entry-time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .88rem; }
@@ -265,6 +268,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .report-card.r-dien { border-top: 4px solid var(--team-dien); }
 .report-card.r-cokhi { border-top: 4px solid var(--team-cokhi); }
 .report-card.r-pm { border-top: 4px solid var(--team-pm); }
+.report-card.r-trucca { border-top: 4px solid var(--team-trucca); }
 .missing { margin-top: 12px; }
 
 /* Bảng báo cáo (máy tính) → thẻ (điện thoại) */

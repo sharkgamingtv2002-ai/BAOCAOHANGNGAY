@@ -214,9 +214,9 @@ test('quyền xem báo cáo tổng hợp', async () => {
   assert.equal(list.body.reports[0].entries.length, 2);
   assert.equal((await qlPM.call('report_history', { p_date: D, p_team: 'Điện' })).status, 403);
 
-  // quản lý "tất cả" và Admin thấy cả 3 nhóm
-  assert.deepEqual((await qlAll.call('reports_of_day', { p_date: D })).body.reports.map((r) => r.team), ['Điện', 'Cơ Khí', 'PM']);
-  assert.equal((await admin.call('reports_of_day', { p_date: D })).body.reports.length, 3);
+  // quản lý "tất cả" và Admin thấy cả 4 nhóm
+  assert.deepEqual((await qlAll.call('reports_of_day', { p_date: D })).body.reports.map((r) => r.team), ['Điện', 'Cơ Khí', 'PM', 'Trực ca']);
+  assert.equal((await admin.call('reports_of_day', { p_date: D })).body.reports.length, 4);
 
   // chưa đăng nhập / token giả
   assert.equal((await client().call('reports_of_day', { p_date: D })).status, 401);
@@ -610,4 +610,18 @@ test('chữ ký người duyệt: Quản lý tự chèn chữ ký + tên dưới
   // xóa chữ ký
   assert.equal((await mine(ql, null)).status, 200);
   assert.equal((await ql.call('report_export', { p_date: D, p_team: 'Cơ Khí' })).body.approved_by_signature, null);
+});
+
+test('nhóm Trực ca: đăng ký, nhập, quản lý riêng nhóm, xuất Excel như 3 nhóm kia', async () => {
+  const D = '2026-11-27';
+  const nv = await makeUser('nv.trucca', 'Trực ca');
+  const ql = await makeUser('ql.trucca', 'Trực ca', 'manager', { teams: ['Trực ca'] });
+  const qlDien = await makeUser('ql.dien3', 'Điện', 'manager', { teams: ['Điện'] });
+  assert.equal((await nv.call('add_entries', { p_date: D, p_team: 'Trực ca', p_entries: [entry(D)] })).status, 200);
+  assert.equal((await qlDien.call('approve_report', { p_date: D, p_team: 'Trực ca' })).status, 403, 'quản lý nhóm khác không duyệt được');
+  assert.equal((await ql.call('approve_report', { p_date: D, p_team: 'Trực ca' })).status, 200);
+  const ex = await ql.call('report_export', { p_date: D, p_team: 'Trực ca' });
+  assert.equal(ex.status, 200);
+  assert.equal(ExcelExport.exportFileName(ex.body.team, ex.body.date, ex.body.shift), 'BaoCao_TrucCa_HanhChinh_27-11-2026.xlsx');
+  assert.equal((await nv.call('add_entries', { p_date: D, p_team: 'Trực Ca', p_entries: [entry(D)] })).status, 400, 'sai tên nhóm vẫn bị chặn');
 });

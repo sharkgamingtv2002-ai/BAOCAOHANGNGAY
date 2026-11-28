@@ -34,7 +34,7 @@ create table if not exists private.users (
   full_name     text not null,
   password_hash text not null,
   role          text not null default 'staff' check (role in ('admin', 'manager', 'staff')),
-  team          text check (team is null or team in ('Điện', 'Cơ Khí', 'PM')),
+  team          text check (team is null or team in ('Điện', 'Cơ Khí', 'PM', 'Trực ca')),
   status        text not null default 'pending' check (status in ('pending', 'active', 'rejected', 'locked')),
   manager_all   boolean not null default false,          -- quản lý được xem tất cả nhóm
   manager_teams text[] not null default '{}',            -- hoặc chỉ các nhóm này
@@ -60,7 +60,7 @@ create table if not exists private.login_failures (
 create table if not exists private.reports (
   id          bigint generated always as identity primary key,
   report_date date not null,
-  team        text not null check (team in ('Điện', 'Cơ Khí', 'PM')),
+  team        text not null check (team in ('Điện', 'Cơ Khí', 'PM', 'Trực ca')),
   status      text not null default 'draft' check (status in ('draft', 'approved')),
   approved_by bigint references private.users (id),
   approved_at timestamptz
@@ -68,6 +68,11 @@ create table if not exists private.reports (
 -- Ca làm việc (bản cập nhật 4): mỗi ngày + nhóm + ca là 1 báo cáo riêng. Dữ liệu cũ = ca Hành chính
 alter table private.reports add column if not exists shift text not null default 'Hành chính';
 alter table private.reports drop constraint if exists reports_report_date_team_key;
+-- thêm nhóm "Trực ca": thay điều kiện nhóm của bảng đã có
+alter table private.users drop constraint if exists users_team_check;
+alter table private.users add constraint users_team_check check (team is null or team in ('Điện', 'Cơ Khí', 'PM', 'Trực ca'));
+alter table private.reports drop constraint if exists reports_team_check;
+alter table private.reports add constraint reports_team_check check (team in ('Điện', 'Cơ Khí', 'PM', 'Trực ca'));
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'reports_shift_check') then
     alter table private.reports add constraint reports_shift_check check (shift in ('Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'));
@@ -122,7 +127,7 @@ $$;
 
 create or replace function private.teams()
 returns text[] language sql immutable set search_path = '' as $$
-  select array['Điện', 'Cơ Khí', 'PM']
+  select array['Điện', 'Cơ Khí', 'PM', 'Trực ca']
 $$;
 
 create or replace function private.shifts()

@@ -1,9 +1,9 @@
 'use strict';
 /* =============== Báo cáo công việc hàng ngày – giao diện =============== */
-const TEAMS = ['Điện', 'Cơ Khí', 'PM'];
+const TEAMS = ['Điện', 'Cơ Khí', 'PM', 'Trực ca'];
 const SHIFTS = ['Hành chính', 'Ca 1', 'Ca 2', 'Ca 3'];
 const DEFAULT_SHIFT = 'Hành chính';
-const TEAM_CLASS = { 'Điện': 'dien', 'Cơ Khí': 'cokhi', PM: 'pm' };
+const TEAM_CLASS = { 'Điện': 'dien', 'Cơ Khí': 'cokhi', PM: 'pm', 'Trực ca': 'trucca' };
 const ROLE_LABEL = { admin: 'Admin', manager: 'Quản lý', staff: 'Nhân viên' };
 const STATUS_LABEL = { pending: 'Chờ duyệt', active: 'Hoạt động', rejected: 'Bị từ chối', locked: 'Đã khóa' };
 const FIELD_LABEL = { machine: 'Tên máy', description: 'Diễn giải', start_at: 'Bắt đầu', end_at: 'Kết thúc', completion: 'Trạng thái', note: 'Tình trạng máy / Ghi chú', coworker_ids: 'Người làm cùng', shift: 'Ca làm việc' };
@@ -501,7 +501,7 @@ function authShell(inner) {
         <img src="img/xuong-co-khi.webp" alt="Xưởng cơ khí – An toàn trên hết">
         <div class="caption">
           <h1>Báo cáo công việc hàng ngày</h1>
-          <p>Phòng Kỹ thuật · Nhập, tổng hợp và phê duyệt báo cáo sửa chữa của nhóm Điện, Cơ Khí và PM.</p>
+          <p>Phòng Kỹ thuật · Nhập, tổng hợp và phê duyệt báo cáo sửa chữa của nhóm Điện, Cơ Khí, PM và Trực ca.</p>
         </div>
       </div>
       <div class="auth-panel"><div class="auth-box">${inner}</div></div>
