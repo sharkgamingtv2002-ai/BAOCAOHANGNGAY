@@ -180,9 +180,16 @@ test('khóa sửa sau phê duyệt và ghi lịch sử chỉnh sửa', async () 
   assert.deepEqual(upd.new_value, { completion: 100, note: 'Đã chạy thử' });
   assert.equal((await qlDien.call('report_history', body)).status, 403);
 
-  // chỉ Admin hủy phê duyệt
-  assert.equal((await ql.call('unapprove_report', body)).status, 403);
-  assert.equal((await admin.call('unapprove_report', body)).status, 200);
+  // hiện người duyệt; chỉ người đã duyệt (hoặc Admin) được hủy phê duyệt
+  const qlCo2 = await makeUser('ql.co2', 'Cơ Khí', 'manager', { teams: ['Cơ Khí'] });
+  const card = (await ql.call('reports_of_day', { p_date: D })).body.reports.find((r) => r.team === 'Cơ Khí');
+  assert.equal(card.approved_by_name, 'NV ql.co');
+  assert.equal(card.approved_by, await userId('ql.co'));
+  assert.equal((await qlCo2.call('unapprove_report', body)).status, 403, 'quản lý khác không hủy được');
+  assert.equal((await nv.call('unapprove_report', body)).status, 403);
+  assert.equal((await ql.call('unapprove_report', body)).status, 200, 'người duyệt tự hủy được');
+  assert.equal((await ql.call('approve_report', body)).status, 200);
+  assert.equal((await admin.call('unapprove_report', body)).status, 200, 'Admin hủy được');
   assert.equal((await nv.call('update_entry', { p_id: id, p_entry: { machine: 'Máy ép 1A' } })).status, 200);
 });
 
@@ -549,4 +556,58 @@ test('báo cáo gom theo người gửi: việc của mỗi người thành 1 c�
   assert.deepEqual(rep.entries.map((e) => e.description), ['A0', 'A1', 'A2', 'B1'], 'cụm A (theo giờ) rồi tới cụm B');
   // số dòng trong cảnh báo thiếu khớp vị trí trong bảng / file Excel
   assert.deepEqual(rep.missing.map((m) => [m.row, m.user_name]), [[4, rep.entries[3].user_name]]);
+});
+
+test('chữ ký người duyệt: Quản lý tự chèn chữ ký + tên dưới chữ ký, file Excel in ra khi đã duyệt', async () => {
+  const D = '2026-11-26';
+  // PNG 1×1 hợp lệ
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const nv = await makeUser('nv.ky', 'Cơ Khí');
+  const ql = await makeUser('ql.ky', 'Cơ Khí', 'manager', { teams: ['Cơ Khí'] });
+  const qlId = await userId('ql.ky');
+  const nvId = await userId('nv.ky');
+  const set = (c, id, sig) => c.call('admin_set_signature', { p_user_id: id, p_signature: sig });
+
+  const mine = (c, sig, name) => c.call('set_my_signature', { p_signature: sig, p_name: name });
+  assert.equal((await set(ql, qlId, PNG)).status, 403, 'Quản lý không sửa chữ ký người khác');
+  assert.equal((await set(admin, nvId, PNG)).status, 403, 'nhân viên không có chữ ký duyệt');
+  assert.equal((await mine(nv, PNG)).status, 403, 'nhân viên không tự chèn được');
+  assert.equal((await set(admin, qlId, 'data:image/svg+xml;base64,PHN2Zz4=')).status, 400, 'chỉ nhận PNG');
+  assert.equal((await set(admin, qlId, 'data:image/png;base64,' + 'A'.repeat(200000))).status, 400, 'quá lớn');
+  // Quản lý tự chèn chữ ký + tên dưới chữ ký
+  assert.equal((await mine(ql, PNG, 'Trưởng ca – Lê Văn Ký')).status, 200);
+  const me = (await ql.call('me')).body.user;
+  assert.equal(me.signature, PNG);
+  assert.equal(me.signature_name, 'Trưởng ca – Lê Văn Ký');
+  assert.equal((await nv.call('me')).body.user.signature, undefined, 'nhân viên không nhận trường chữ ký');
+  const listed = (await admin.call('admin_list_users')).body.users.find((x) => x.id === qlId);
+  assert.equal(listed.signature, PNG);
+
+  assert.equal((await nv.call('add_entries', { p_date: D, p_team: 'Cơ Khí', p_entries: [entry(D)] })).status, 200);
+  // chưa duyệt: không có chữ ký
+  let ex = await ql.call('report_export', { p_date: D, p_team: 'Cơ Khí' });
+  assert.equal(ex.body.approved_by_signature, null);
+  assert.equal((await ql.call('approve_report', { p_date: D, p_team: 'Cơ Khí' })).status, 200);
+  ex = await ql.call('report_export', { p_date: D, p_team: 'Cơ Khí' });
+  assert.equal(ex.body.approved_by_signature, PNG);
+
+  const template = fs.readFileSync(path.join(__dirname, '..', 'web', 'mau_bao_cao.xlsx'));
+  const wb = await ExcelExport.buildWorkbook(ExcelJS, template, ex.body);
+  const ws = wb.worksheets[0];
+  assert.equal(ex.body.approved_by_sign_name, 'Trưởng ca – Lê Văn Ký');
+  assert.equal(ws.getCell('F31').value, 'Trưởng ca – Lê Văn Ký', 'tên dưới chữ ký');
+  const imgs = ws.getImages();
+  assert.equal(imgs.length, 1);
+  assert.equal(Math.floor(imgs[0].range.tl.nativeRow), 28, 'ảnh nằm ở dòng 29, dưới chữ "Người duyệt"');
+  // ghi ra file rồi đọc lại được (ảnh không làm hỏng file)
+  const again = new ExcelJS.Workbook();
+  await again.xlsx.load(await wb.xlsx.writeBuffer());
+  assert.equal(again.worksheets[0].getImages().length, 1);
+
+  // Admin sửa giúp: để trống tên → in họ tên tài khoản
+  assert.equal((await set(admin, qlId, PNG)).status, 200);
+  assert.equal((await ql.call('report_export', { p_date: D, p_team: 'Cơ Khí' })).body.approved_by_sign_name, 'NV ql.ky');
+  // xóa chữ ký
+  assert.equal((await mine(ql, null)).status, 200);
+  assert.equal((await ql.call('report_export', { p_date: D, p_team: 'Cơ Khí' })).body.approved_by_signature, null);
 });

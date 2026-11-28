@@ -169,7 +169,20 @@
 
     // 4) Tên người duyệt (ô gộp F31:H31)
     if (report.status === 'approved' && report.approved_by_name) {
-      ws.getCell('F' + (L.footerEnd + extra)).value = report.approved_by_name;
+      ws.getCell('F' + (L.footerEnd + extra)).value = report.approved_by_sign_name || report.approved_by_name;
+    }
+    // 5) Chữ ký người duyệt: ảnh 300×120 (Admin tải lên) đặt giữa F–H, dòng 29–30 (nới cao cho vừa)
+    if (report.status === 'approved' && report.approved_by_signature) {
+      var sigRow = L.footerEnd - 2 + extra; // dòng 29
+      ws.getRow(sigRow).height = 33;
+      ws.getRow(sigRow + 1).height = 33;
+      var px = function (col) { return Math.floor((ws.getColumn(col).width || 10) * 7 + 5); };
+      var w = 210, h = 84, left = (px(6) + px(7) + px(8) - w) / 2;
+      var EMU = 9525; // 1 px; vị trí lẻ kiểu col: 5.6 của ExcelJS tính theo cột mặc định nên lệch → dùng offset EMU
+      ws.addImage(wb.addImage({ base64: report.approved_by_signature, extension: 'png' }), {
+        tl: { nativeCol: 5, nativeColOff: Math.round(left * EMU), nativeRow: sigRow - 1, nativeRowOff: 2 * EMU },
+        ext: { width: w, height: h }, editAs: 'oneCell',
+      });
     }
     wb.creator = 'He thong bao cao cong viec';
     return wb;

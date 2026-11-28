@@ -854,11 +854,12 @@ async function loadReports() {
       <div class="report-head">
         <div>
           <div class="report-title"><h2>Báo cáo nhóm ${esc(rep.team)}</h2>${shiftTag(rep.shift)}${reportBadge(rep.status)}</div>
-          <div class="report-meta">${rep.entries.length} dòng công việc${approved && rep.approved_by_name ? ` · Duyệt bởi ${esc(rep.approved_by_name)} lúc ${esc(rep.approved_at)}` : ''}</div>
+          <div class="report-meta">${rep.entries.length} dòng công việc</div>
+          ${approved && rep.approved_by_name ? `<div class="approved-by">✅ Đã phê duyệt bởi <strong>${esc(rep.approved_by_name)}</strong> lúc ${esc(rep.approved_at)}</div>` : ''}
         </div>
         <div class="report-actions">
           ${!approved && rep.entries.length ? '<button class="btn btn-sm" data-act="approve">✓ Phê duyệt</button>' : ''}
-          ${approved && isAdmin ? '<button class="btn btn-ghost btn-sm" data-act="unapprove">Hủy phê duyệt</button>' : ''}
+          ${approved && (isAdmin || rep.approved_by === state.user.id) ? '<button class="btn btn-ghost btn-sm" data-act="unapprove">Hủy phê duyệt</button>' : ''}
           ${rep.entries.length ? '<button class="btn btn-accent btn-sm" data-act="export">⬇ Xuất Excel</button>' : ''}
           <button class="btn btn-ghost btn-sm" data-act="history">Lịch sử</button>
         </div>
@@ -1197,7 +1198,8 @@ async function loadUsers() {
         <div class="user-actions"><button class="btn btn-sm" data-a="approve">Duyệt</button>${u.status === 'pending' ? '<button class="btn btn-danger btn-sm" data-a="reject">Từ chối</button>' : ''}</div></div>`;
     }
     if (isAdmin) {
-      return `<div class="user-row">${head}<div class="small">Toàn quyền</div><div></div><div></div><div class="user-actions small muted">Đổi mật khẩu ở trang Tài khoản</div></div>`;
+      return `<div class="user-row" data-id="${u.id}">${head}<div class="small">Toàn quyền</div><div></div><div></div>
+        <div class="user-actions"><button class="btn btn-ghost btn-sm" data-a="sig">${u.signature ? '✍️ Chữ ký' : '+ Chữ ký'}</button></div></div>`;
     }
     return `<div class="user-row" data-id="${u.id}">${head}
       <label class="field"><span class="small">Vai trò</span><select data-f="role">
@@ -1212,6 +1214,7 @@ async function loadUsers() {
       <div class="user-actions">
         <button class="btn btn-sm" data-a="save">Lưu</button>
         <button class="btn btn-ghost btn-sm" data-a="reset">Đặt lại MK</button>
+        ${u.role === 'manager' ? `<button class="btn btn-ghost btn-sm" data-a="sig">${u.signature ? '✍️ Chữ ký' : '+ Chữ ký'}</button>` : ''}
         ${u.status === 'locked' ? '<button class="btn btn-ghost btn-sm" data-a="unlock">Mở khóa</button>' : '<button class="btn btn-danger btn-sm" data-a="lock">Khóa</button>'}
       </div></div>`;
   }).join('');
@@ -1253,6 +1256,9 @@ async function userAction(a, u, row) {
       }
       r = await rpc('admin_update_user', { p_user_id: u.id, p_role: role, p_team: team, p_manager_all: all, p_manager_teams: teams });
     } else if (a === 'reset') return resetPasswordDialog(u);
+    else if (a === 'sig') {
+      return signatureDialog(u, (sig, name) => rpc('admin_set_signature', { p_user_id: u.id, p_signature: sig, p_name: name }), loadUsers);
+    }
     toast(r.message);
     loadUsers();
   } catch (err) { toast(err.message, true); }
@@ -1275,6 +1281,60 @@ function resetPasswordDialog(u) {
   });
 }
 
+/** Ô xem trước chữ ký + tên in bên dưới (giống ô "Người duyệt" trong Excel) */
+function sigPreviewHTML(u) {
+  return `<div class="sig-preview"><img data-img alt="Ảnh chữ ký" ${u.signature ? `src="${u.signature}"` : 'hidden'}>
+    <span data-none class="muted small" ${u.signature ? 'hidden' : ''}>Chưa có chữ ký</span>
+    <div class="sig-name" data-sig-name>${esc(u.signature_name || u.full_name)}</div></div>`;
+}
+
+/** Chèn ảnh chữ ký (Quản lý tự làm ở trang Tài khoản, Admin sửa giúp ở trang Quản trị).
+ *  Ảnh thu về khung 300×120 PNG: nhỏ, cùng tỉ lệ ô "Người duyệt" trong Excel. */
+function signatureDialog(u, saveRpc, done) {
+  let data = u.signature || null;
+  const d = openDialog(`Chữ ký duyệt · ${u.full_name}`, `
+    <div class="stack">
+      <p class="small muted">Chữ ký và tên bên dưới sẽ in vào ô "Người duyệt" của file Excel khi bấm phê duyệt.
+        Nên dùng ảnh chữ ký trên nền trắng, chụp rõ nét.</p>
+      ${sigPreviewHTML(u)}
+      <label class="field"><span>Chọn ảnh chữ ký</span><input type="file" accept="image/*" data-file></label>
+      <label class="field"><span>Tên dưới chữ ký</span><input data-name maxlength="100" value="${esc(u.signature_name || u.full_name)}">
+        <span class="hint">Chỉ ghi họ tên, VD: Trần Văn A. Để trống thì lấy họ tên tài khoản.</span></label>
+      <div class="form-error" data-err hidden></div>
+    </div>`, `${u.signature ? '<button class="btn btn-danger" data-del>Xóa chữ ký</button>' : ''}
+    <button class="btn btn-ghost" data-close>Hủy</button><button class="btn" data-save>Lưu chữ ký</button>`);
+  const img = $('[data-img]', d);
+  const nameIn = $('[data-name]', d);
+  nameIn.oninput = () => { $('[data-sig-name]', d).textContent = nameIn.value.trim() || u.full_name; };
+  const err = (m) => { const e = $('[data-err]', d); e.textContent = m; e.hidden = !m; };
+  $('[data-file]', d).onchange = (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const src = URL.createObjectURL(file);
+    const pic = new Image();
+    pic.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = 300; c.height = 120;
+      const k = Math.min(c.width / pic.width, c.height / pic.height);
+      const w = pic.width * k, h = pic.height * k;
+      c.getContext('2d').drawImage(pic, (c.width - w) / 2, (c.height - h) / 2, w, h);
+      URL.revokeObjectURL(src);
+      data = c.toDataURL('image/png');
+      img.src = data; img.hidden = false; $('[data-none]', d).hidden = true; err('');
+    };
+    pic.onerror = () => err('Không đọc được ảnh này, hãy chọn file ảnh khác (JPG, PNG).');
+    pic.src = src;
+  };
+  const save = async (value) => {
+    const name = nameIn.value.trim();
+    try { const r = await saveRpc(value, name === u.full_name ? '' : name); closeDialog(); toast(r.message); done(value, name); }
+    catch (e) { err(e.message); }
+  };
+  $('[data-save]', d).onclick = () => (data ? save(data) : err('Hãy chọn ảnh chữ ký.'));
+  const del = $('[data-del]', d);
+  if (del) del.onclick = () => save(null);
+}
+
 /* ---------- Trang tài khoản ---------- */
 function renderAccount() {
   renderTopbar('#/tai-khoan');
@@ -1292,6 +1352,12 @@ function renderAccount() {
           <button class="btn" type="submit">Lưu họ tên</button>
         </form>
       </section>
+      ${u.role === 'manager' || u.role === 'admin' ? `<section class="card" id="sig-card">
+        <h2>Chữ ký duyệt</h2>
+        <p class="muted small">Khi bạn bấm Phê duyệt, chữ ký và tên này được in vào ô "Người duyệt" của file Excel.</p>
+        <div class="stack">${sigPreviewHTML(u)}
+          <button class="btn" data-my-sig>${u.signature ? 'Đổi chữ ký' : '+ Chèn chữ ký'}</button></div>
+      </section>` : ''}
       <section class="card">
         <h2>Đổi mật khẩu</h2>
         <form id="cp" class="stack" novalidate>
@@ -1304,6 +1370,12 @@ function renderAccount() {
         </form>
       </section>
     </div>`;
+  const mySig = $('[data-my-sig]');
+  if (mySig) {
+    mySig.onclick = () => signatureDialog(u, (sig, name) => rpc('set_my_signature', { p_signature: sig, p_name: name }), (sig, name) => {
+      u.signature = sig; u.signature_name = sig && name && name !== u.full_name ? name : null; renderAccount();
+    });
+  }
   const pf = $('#pf');
   pf.addEventListener('submit', async (ev) => {
     ev.preventDefault();

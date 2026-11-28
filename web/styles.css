@@ -418,3 +418,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
 /* Tiêu đề cụm theo người gửi trong bảng báo cáo */
 .tbl tr.grp-row td { background: var(--brand-soft); color: var(--brand); font-weight: 700; padding: 8px 12px; border-top: 2px solid var(--brand); }
 @media (max-width: 720px) { .tbl tr.grp-row { border: 0; background: none; box-shadow: none; padding: 0; margin: 14px 0 6px; } .tbl tr.grp-row td { border-radius: 8px; } }
+
+/* Ảnh chữ ký người duyệt (trang Admin) */
+.sig-preview { display: grid; justify-items: center; gap: 4px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; background: #fff; color: #1c2117; min-height: 120px; align-content: center; }
+.sig-preview img { width: 300px; max-width: 100%; height: auto; }
+.sig-name { font-weight: 700; }
+.approved-by { margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); font-size: .9rem; display: inline-block; }

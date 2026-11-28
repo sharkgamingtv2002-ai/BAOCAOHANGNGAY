@@ -41,6 +41,9 @@ create table if not exists private.users (
   created_at    timestamptz not null default now()
 );
 create unique index if not exists users_username_key on private.users (lower(username));
+-- Ảnh chữ ký (PNG dạng data URL) của Quản lý / Admin, in vào ô "Người duyệt" khi xuất Excel
+alter table private.users add column if not exists signature text;
+alter table private.users add column if not exists signature_name text; -- tên in dưới chữ ký (trống = họ tên)
 
 create table if not exists private.sessions (
   token_hash text primary key,
@@ -163,6 +166,8 @@ returns jsonb language sql stable set search_path = '' as $$
     'id', u.id, 'username', u.username, 'full_name', u.full_name, 'role', u.role, 'team', u.team,
     'manager_all', u.manager_all, 'manager_teams', to_jsonb(u.manager_teams),
     'viewable_teams', to_jsonb(private.viewable_teams(u)))
+    || case when u.role in ('manager', 'admin')
+            then jsonb_build_object('signature', u.signature, 'signature_name', u.signature_name) else '{}'::jsonb end
 $$;
 
 /** Lấy người dùng từ token phiên; lỗi 401 nếu không hợp lệ */
@@ -425,7 +430,7 @@ create or replace function private.report_payload(u private.users, p_date date, 
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare r record; v_entries jsonb; v_manage boolean := private.can_manage(u, p_team);
 begin
-  select rp.id, rp.status, rp.approved_at, au.full_name as approved_by_name into r
+  select rp.id, rp.status, rp.approved_at, rp.approved_by, au.full_name as approved_by_name into r
     from private.reports rp left join private.users au on au.id = rp.approved_by
    where rp.report_date = p_date and rp.team = p_team and rp.shift = p_shift;
   if not found then
@@ -445,7 +450,7 @@ begin
             from private.entries x where x.report_id = r.id) e
     join private.users eu on eu.id = e.user_id;
   return jsonb_build_object('date', p_date, 'team', p_team, 'shift', p_shift, 'status', r.status,
-                            'approved_by_name', r.approved_by_name, 'approved_at', private.vn(r.approved_at),
+                            'approved_by', r.approved_by, 'approved_by_name', r.approved_by_name, 'approved_at', private.vn(r.approved_at),
                             'entries', v_entries, 'missing', private.missing(r.id));
 end $$;
 
@@ -584,7 +589,7 @@ begin
     select jsonb_agg(jsonb_build_object(
              'id', x.id, 'username', x.username, 'full_name', x.full_name, 'role', x.role, 'team', x.team,
              'status', x.status, 'manager_all', x.manager_all, 'manager_teams', to_jsonb(x.manager_teams),
-             'created_at', private.vn(x.created_at))
+             'created_at', private.vn(x.created_at), 'signature', x.signature, 'signature_name', x.signature_name)
            order by (x.status = 'pending') desc, x.created_at desc)
       from private.users x), '[]'::jsonb));
 end $$;
@@ -650,6 +655,41 @@ begin
   update private.users set password_hash = private.hash_password(p_new_password) where id = t.id;
   delete from private.sessions where user_id = t.id;
   return jsonb_build_object('ok', true, 'message', 'Đã đặt lại mật khẩu cho ' || t.username || '.');
+end $$;
+
+/** Lưu / xóa chữ ký duyệt (p_signature null = xóa) + tên in dưới chữ ký; chỉ cho Quản lý / Admin */
+create or replace function private.save_signature(t private.users, p_signature text, p_name text)
+returns jsonb language plpgsql set search_path = '' as $$
+declare v_name text := nullif(private.check_text(p_name, 100), '');
+begin
+  if t.role not in ('manager', 'admin') then perform private.err(403, 'Chỉ tài khoản Quản lý mới có chữ ký duyệt.'); end if;
+  if p_signature is not null and (length(p_signature) > 200000
+      or p_signature !~ '^data:image/png;base64,[A-Za-z0-9+/]+=*$') then
+    perform private.err(400, 'Ảnh chữ ký không hợp lệ hoặc quá lớn.');
+  end if;
+  update private.users set signature = p_signature, signature_name = case when p_signature is null then null else v_name end
+   where id = t.id;
+  return jsonb_build_object('ok', true, 'message',
+    case when p_signature is null then 'Đã xóa chữ ký của ' else 'Đã lưu chữ ký của ' end || t.full_name || '.');
+end $$;
+
+/** Quản lý tự chèn chữ ký của mình */
+create or replace function public.set_my_signature(p_token text, p_signature text, p_name text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+  return private.save_signature(private.auth_user(p_token), p_signature, p_name);
+end $$;
+
+/** Admin chèn / sửa giúp chữ ký của tài khoản Quản lý hoặc Admin */
+drop function if exists public.admin_set_signature(text, bigint, text);
+create or replace function public.admin_set_signature(p_token text, p_user_id bigint, p_signature text, p_name text default null)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare u private.users := private.auth_user(p_token); t private.users;
+begin
+  perform private.require_admin(u);
+  select * into t from private.users where id = p_user_id for update;
+  if not found then perform private.err(404, 'Không tìm thấy tài khoản.'); end if;
+  return private.save_signature(t, p_signature, p_name);
 end $$;
 
 -- ===== Dòng công việc =====
@@ -1088,10 +1128,14 @@ returns jsonb language plpgsql security definer set search_path = '' as $$
 declare u private.users := private.auth_user(p_token); d date := private.check_date(p_date); r private.reports;
         v_shift text := private.check_shift(p_shift);
 begin
-  perform private.require_admin(u);
+  perform private.require_manager(u);
   perform private.check_team(p_team);
   select * into r from private.reports where report_date = d and team = p_team and shift = v_shift for update;
   if not found or r.status <> 'approved' then perform private.err(400, 'Báo cáo chưa được phê duyệt.'); end if;
+  -- chỉ người đã bấm phê duyệt (hoặc Admin) được hủy
+  if u.role <> 'admin' and r.approved_by is distinct from u.id then
+    perform private.err(403, 'Chỉ người đã phê duyệt báo cáo này (hoặc Admin) mới hủy được phê duyệt.');
+  end if;
   update private.reports set status = 'draft', approved_by = null, approved_at = null where id = r.id;
   perform private.log(r.id, null, u.id, 'unapprove', true, null, null);
   return jsonb_build_object('ok', true, 'message', 'Đã hủy phê duyệt, nhân viên nhóm ' || p_team || ' (' || v_shift || ') có thể sửa lại.');
@@ -1114,7 +1158,13 @@ begin
   if jsonb_array_length(v -> 'missing') > 0 then
     perform private.err(400, 'Báo cáo chưa đầy đủ, chưa thể xuất Excel.', (v -> 'missing')::text);
   end if;
-  return v;
+  -- chữ ký của người đã bấm phê duyệt (chỉ khi báo cáo đã duyệt)
+  return v || coalesce((
+    select jsonb_build_object('approved_by_signature', au.signature,
+                              'approved_by_sign_name', coalesce(au.signature_name, au.full_name))
+      from private.reports rp join private.users au on au.id = rp.approved_by
+     where rp.report_date = d and rp.team = p_team and rp.shift = v_shift and rp.status = 'approved'),
+    jsonb_build_object('approved_by_signature', null, 'approved_by_sign_name', null));
 end $$;
 
 -- ---------------------------------------------------------------------
@@ -1127,7 +1177,7 @@ declare f record;
                             'my_entries', 'add_entry', 'add_entries', 'update_entry', 'delete_entry',
                             'reports_of_day', 'reports_month', 'report_history', 'approve_report',
                             'unapprove_report', 'report_export', 'list_coworkers', 'admin_storage', 'admin_backup',
-                            'admin_purge_preview', 'admin_purge_backup', 'admin_purge'];
+                            'admin_purge_preview', 'admin_purge_backup', 'admin_purge', 'admin_set_signature', 'set_my_signature'];
         roles text := '';
 begin
   if exists (select 1 from pg_roles where rolname = 'anon') then roles := roles || ', anon'; end if;
