@@ -872,7 +872,7 @@ begin
   return jsonb_build_object('users', coalesce((
     select jsonb_agg(jsonb_build_object('id', x.id, 'full_name', x.full_name, 'team', x.team)
            order by array_position(private.teams(), x.team) nulls last, x.full_name)
-      from private.users x where x.status = 'active'), '[]'::jsonb));
+      from private.users x where x.status = 'active' and x.role <> 'manager'), '[]'::jsonb)); -- Quản lý không làm cùng; Admin vẫn hiện
 end $$;
 
 -- ===== Dung lượng, sao lưu & xóa dữ liệu cũ (Admin) =====

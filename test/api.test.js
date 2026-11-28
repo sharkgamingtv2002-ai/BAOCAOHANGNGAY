@@ -297,12 +297,15 @@ test('người làm cùng: chọn thêm người, hiện trong Excel, người l
   const idAn = await userId('nv.an');
   const idBinh = await userId('nv.binh');
   const idLong = await userId('dh.long');
+  const qlId = await userId('ql.cw');
 
   // danh sách để chọn: chỉ tài khoản đang hoạt động
   const list = await long.call('list_coworkers');
   assert.equal(list.status, 200);
   assert.ok(list.body.users.some((u) => u.id === idAn && u.full_name === 'NV nv.an'));
   assert.ok(!list.body.users.some((u) => u.full_name === 'Nhân viên chờ'), 'không có tài khoản chưa duyệt/bị khóa');
+  assert.ok(!list.body.users.some((u) => u.id === qlId), 'không hiện tài khoản Quản lý');
+  assert.ok(list.body.users.some((u) => u.full_name === 'Quản trị viên'), 'tài khoản Admin vẫn hiện');
   assert.equal((await client().call('list_coworkers')).status, 401);
 
   // kiểm tra dữ liệu
